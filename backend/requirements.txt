@@ -1,0 +1,26 @@
+# FastAPI Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# Database
+mysql-connector-python==9.1.0
+
+# LangChain & AI
+langchain==1.2.10
+langchain-core==0.3.15
+langchain-google-genai==2.0.5
+
+# Google Gemini
+google-genai==0.3.0
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Optional (for training data generation)
+groq==0.15.0
+jsonlines==4.0.0
+
+# Optional (for Modal deployment)
+modal==0.65.0
