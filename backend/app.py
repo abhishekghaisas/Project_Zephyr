@@ -1,33 +1,44 @@
+"""
+SeaTac Operations Intelligence - Modal Edition v7.0
+FastAPI Implementation with Fine-Tuned Code Llama
+
+SQL Generation Hierarchy:
+1. Modal fine-tuned Code Llama (PRIMARY - your custom model)
+2. OpenRouter (FALLBACK - general purpose)
+3. Pre-built SQL (GUARANTEED - hardcoded queries)
+
+Enhancements from v6.5:
+- ✅ Modal fine-tuned Code Llama integration
+- ✅ Temporal filtering (afternoon, morning, time ranges)
+- ✅ Output format classification (chart/table/text)
+- ✅ Enhanced reasoning with production-grade prompting
+- ✅ Smart 3-tier SQL generation
+"""
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Literal
+from dataclasses import dataclass
 import mysql.connector
 from mysql.connector import Error
 import json
 import re
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 import os
 from dotenv import load_dotenv
 import uvicorn
-
-# LangChain imports for version 1.2.10
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.tools import BaseTool
-from langchain_core.callbacks import CallbackManagerForToolRun
-from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage, SystemMessage
+import requests
 
 load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
     title="SeaTac Airport Operations Intelligence",
-    description="AI-powered airport operations analysis with all 11 SeaTac use cases",
-    version="5.0.0"
+    description="AI-powered airport operations analysis - Modal Edition v7.0",
+    version="7.0.0"
 )
 
 # CORS configuration
@@ -40,64 +51,424 @@ app.add_middleware(
 )
 
 # Configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'google/gemini-2.0-flash-exp:free')
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Custom JSON encoder for Decimal and datetime types
+# Modal Configuration
+MODAL_ENDPOINT = os.getenv('MODAL_ENDPOINT')
+USE_MODAL_MODEL = os.getenv('USE_MODAL_MODEL', 'true').lower() == 'true'
+
+# Custom JSON encoder
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
         if isinstance(obj, datetime):
             return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
         return super(DecimalEncoder, self).default(obj)
 
-# Initialize LangChain LLM
-if GEMINI_API_KEY:
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model=GEMINI_MODEL,
-            google_api_key=GEMINI_API_KEY,
-            temperature=0.1,
-            convert_system_message_to_human=True
-        )
-        print(f"✅ LangChain LLM initialized: {GEMINI_MODEL}")
-    except Exception as e:
-        print(f"❌ LangChain init error: {e}")
-        llm = None
-else:
-    llm = None
-    print("❌ No GEMINI_API_KEY found")
 
-# Database Schema Context
-SCHEMA_CONTEXT = """
-DATABASE SCHEMA - SeaTac Airport Operations (KSEA)
+# ============================================================================
+# MODAL SQL GENERATOR (YOUR FINE-TUNED MODEL)
+# ============================================================================
 
-Tables:
-1. flight - Main flight information
-   - call_sign (VARCHAR): Flight identifier (JOIN key)
-   - aircraft_type (VARCHAR): B737, B738, B739, A320, A321, etc.
-   - operation (ENUM): 'ARRIVAL' or 'DEPARTURE'
-   - schedule_departure, actual_departure, schedule_arrival, actual_arrival (DATETIME)
+class ModalSQLGenerator:
+    """Generate SQL using fine-tuned Code Llama on Modal"""
+    
+    def __init__(self, endpoint: Optional[str], enabled: bool):
+        self.endpoint = endpoint
+        self.enabled = enabled and bool(endpoint)
+        self.timeout = 30
+        
+        if self.enabled:
+            print(f"✅ Modal Code Llama ENABLED")
+            print(f"   Endpoint: {self.endpoint}")
+            print(f"   Your fine-tuned model will be used first!")
+        else:
+            if enabled and not endpoint:
+                print("⚠️  Modal enabled but MODAL_ENDPOINT not set")
+                print("   Will use OpenRouter fallback")
+            else:
+                print("ℹ️  Modal Code Llama disabled (USE_MODAL_MODEL=false)")
+    
+    async def generate_sql(self, query: str) -> Optional[str]:
+        """Generate SQL using Modal endpoint"""
+        if not self.enabled:
+            return None
+        
+        try:
+            print(f"🦙 [Modal] Calling fine-tuned Code Llama...")
+            print(f"   Query: {query[:80]}...")
+            
+            response = requests.post(
+                self.endpoint,
+                json={"query": query},
+                timeout=self.timeout,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code != 200:
+                print(f"❌ [Modal] HTTP {response.status_code}")
+                print(f"   Response: {response.text[:200]}")
+                return None
+            
+            result = response.json()
+            
+            if result.get('error'):
+                print(f"❌ [Modal] Error: {result['error']}")
+                return None
+            
+            sql = result.get('sql', '').strip()
+            
+            if not sql:
+                print("❌ [Modal] Empty SQL returned")
+                return None
+            
+            # Validate SQL
+            if 'SELECT' not in sql.upper():
+                print(f"❌ [Modal] Invalid SQL (no SELECT keyword)")
+                return None
+            
+            print(f"✅ [Modal] Generated SQL successfully")
+            print(f"   Length: {len(sql)} characters")
+            print(f"   Preview: {sql[:100]}...")
+            
+            return sql
+            
+        except requests.Timeout:
+            print(f"⏱️  [Modal] Timeout after {self.timeout}s")
+            print("   Endpoint may be cold-starting (first request takes longer)")
+            return None
+        except requests.ConnectionError as e:
+            print(f"❌ [Modal] Connection failed")
+            print(f"   Is Modal inference server deployed?")
+            print(f"   Error: {e}")
+            return None
+        except Exception as e:
+            print(f"❌ [Modal] Exception: {type(e).__name__}: {e}")
+            return None
 
-2. flight_event - Timeline of operational events
-   - call_sign (VARCHAR): Links to flight (JOIN key)
-   - event_type (ENUM): Actual_Landing, Actual_Take_Off, Actual_Off_Block, Actual_In_Block, etc.
-   - event_time (DATETIME)
-   - location (VARCHAR): Gate_A1, 34L, 34R, TaxiwaySegment_B_28, etc.
 
-3. aircraft_type - Aircraft specifications
-   - aircraft_type (VARCHAR PRIMARY KEY)
-   - weight_class (VARCHAR): L (Light), M (Medium), H (Heavy)
-   - wingspan_ft, wingspan_m (INT)
+# ============================================================================
+# ENHANCEMENT 1: Temporal Context Extraction
+# ============================================================================
+
+class TemporalContextExtractor:
+    """Extract temporal filters from natural language queries"""
+    
+    def __init__(self):
+        self.time_periods = {
+            'morning': (5, 11),
+            'early morning': (5, 8),
+            'late morning': (9, 11),
+            'afternoon': (12, 17),
+            'early afternoon': (12, 14),
+            'late afternoon': (15, 17),
+            'evening': (18, 21),
+            'night': (22, 4),
+            'midnight': (0, 2),
+            'noon': (11, 13),
+            'rush hour': [(7, 9), (16, 18)],
+            'peak hours': [(7, 9), (16, 18)],
+            'business hours': (9, 17),
+            'overnight': (22, 5)
+        }
+    
+    def extract_temporal_context(self, query: str) -> Dict:
+        """Extract all temporal filters from query"""
+        query_lower = query.lower().strip()
+        context = {
+            'hour_range': None,
+            'specific_hours': None,
+            'has_temporal_filter': False
+        }
+        
+        # Extract named periods
+        for period_name, hours in self.time_periods.items():
+            if period_name in query_lower:
+                context['has_temporal_filter'] = True
+                context['hour_range'] = hours
+                break
+        
+        # Extract specific hours
+        specific_hour_pattern = r'\b(?:at\s+)?(\d{1,2})(?::00)?\s*(am|pm|AM|PM)?\b'
+        matches = re.findall(specific_hour_pattern, query_lower)
+        if matches:
+            context['has_temporal_filter'] = True
+            hours = []
+            for hour_str, meridiem in matches:
+                hour = int(hour_str)
+                if meridiem.lower() == 'pm' and hour != 12:
+                    hour += 12
+                elif meridiem.lower() == 'am' and hour == 12:
+                    hour = 0
+                hours.append(hour)
+            context['specific_hours'] = hours
+        
+        # Extract ranges
+        range_pattern = r'between\s+(\d{1,2})(?::00)?\s*(am|pm)?\s+(?:and|to)\s+(\d{1,2})(?::00)?\s*(am|pm)?'
+        range_match = re.search(range_pattern, query_lower)
+        
+        if range_match:
+            context['has_temporal_filter'] = True
+            start_hour = int(range_match.group(1))
+            start_meridiem = range_match.group(2) or ''
+            end_hour = int(range_match.group(3))
+            end_meridiem = range_match.group(4) or ''
+            
+            if start_meridiem.lower() == 'pm' and start_hour != 12:
+                start_hour += 12
+            if end_meridiem.lower() == 'pm' and end_hour != 12:
+                end_hour += 12
+            
+            context['hour_range'] = (start_hour, end_hour)
+        
+        return context
+    
+    def inject_temporal_filter(self, sql_query: str, user_query: str) -> str:
+        """Inject temporal WHERE clauses into existing SQL"""
+        temporal_context = self.extract_temporal_context(user_query)
+        
+        if not temporal_context['has_temporal_filter']:
+            return sql_query
+        
+        # Generate WHERE clause components
+        clauses = []
+        
+        if temporal_context.get('specific_hours'):
+            hours = temporal_context['specific_hours']
+            if len(hours) == 1:
+                clauses.append(f"HOUR(offblock.event_time) = {hours[0]}")
+            else:
+                hour_list = ', '.join(map(str, hours))
+                clauses.append(f"HOUR(offblock.event_time) IN ({hour_list})")
+        
+        elif temporal_context.get('hour_range'):
+            hour_range = temporal_context['hour_range']
+            if isinstance(hour_range, list):
+                range_clauses = []
+                for start, end in hour_range:
+                    if start <= end:
+                        range_clauses.append(f"(HOUR(offblock.event_time) BETWEEN {start} AND {end})")
+                    else:
+                        range_clauses.append(f"(HOUR(offblock.event_time) >= {start} OR HOUR(offblock.event_time) <= {end})")
+                clauses.append(f"({' OR '.join(range_clauses)})")
+            else:
+                start, end = hour_range
+                if start <= end:
+                    clauses.append(f"HOUR(offblock.event_time) BETWEEN {start} AND {end}")
+                else:
+                    clauses.append(f"(HOUR(offblock.event_time) >= {start} OR HOUR(offblock.event_time) <= {end})")
+        
+        if not clauses:
+            return sql_query
+        
+        where_clause = ' AND '.join(clauses)
+        sql_upper = sql_query.upper()
+        
+        # Inject into SQL
+        if 'WHERE' in sql_upper:
+            where_pos = sql_upper.find('WHERE') + 5
+            next_clause_pos = len(sql_query)
+            for clause in ['GROUP BY', 'HAVING', 'ORDER BY', 'LIMIT']:
+                pos = sql_upper.find(clause, where_pos)
+                if pos != -1 and pos < next_clause_pos:
+                    next_clause_pos = pos
+            
+            before = sql_query[:next_clause_pos].rstrip()
+            after = sql_query[next_clause_pos:]
+            return f"{before}\n     AND {where_clause}{after}"
+        else:
+            group_by_pos = sql_upper.find('GROUP BY')
+            if group_by_pos != -1:
+                before = sql_query[:group_by_pos].rstrip()
+                after = sql_query[group_by_pos:]
+                return f"{before}\nWHERE {where_clause}\n{after}"
+            
+            return f"{sql_query.rstrip()}\nWHERE {where_clause}"
+
+
+# ============================================================================
+# ENHANCEMENT 2: Output Format Classification
+# ============================================================================
+
+OutputFormat = Literal['chart', 'table', 'text', 'chart_and_text', 'table_and_text', 'all']
+
+@dataclass
+class OutputPreference:
+    """User's preferred output format"""
+    format: OutputFormat
+    confidence: float
+    reasoning: str
+    
+    @property
+    def show_chart(self) -> bool:
+        return self.format in ['chart', 'chart_and_text', 'all']
+    
+    @property
+    def show_table(self) -> bool:
+        return self.format in ['table', 'table_and_text', 'all']
+    
+    @property
+    def show_text(self) -> bool:
+        return self.format in ['text', 'chart_and_text', 'table_and_text', 'all']
+
+
+class OutputFormatClassifier:
+    """Classify user's desired output format"""
+    
+    def __init__(self):
+        self.format_indicators = {
+            'chart': {
+                'explicit': ['show me a chart', 'create a chart', 'visualize', 'plot', 'graph'],
+                'implicit': ['trends', 'pattern', 'over time', 'by hour', 'compare']
+            },
+            'table': {
+                'explicit': ['show me a table', 'list', 'show me the data', 'table view'],
+                'implicit': ['which flights', 'what are the', 'individual', 'details']
+            },
+            'text': {
+                'explicit': ['just tell me', 'summarize', 'summary', 'brief', 'no chart'],
+                'implicit': ['how many', 'what was', 'average', 'total']
+            }
+        }
+    
+    def classify(self, query: str, intent: str = None) -> OutputPreference:
+        """Classify desired output format"""
+        query_lower = query.lower().strip()
+        
+        scores = {'chart': 0.0, 'table': 0.0, 'text': 0.0}
+        reasons = []
+        
+        for format_type, indicators in self.format_indicators.items():
+            for phrase in indicators['explicit']:
+                if phrase in query_lower:
+                    scores[format_type] += 3.0
+                    reasons.append(f"'{phrase}' → {format_type}")
+            
+            for phrase in indicators['implicit']:
+                if phrase in query_lower:
+                    scores[format_type] += 0.5
+        
+        if all(s < 1.0 for s in scores.values()):
+            if any(kw in query_lower for kw in ['hour', 'time', 'compare', 'trend']):
+                return OutputPreference('chart_and_text', 0.6, "Default: analytical query")
+            return OutputPreference('text', 0.5, "Default: simple query")
+        
+        max_score = max(scores.values())
+        top_formats = [f for f, s in scores.items() if s >= max_score * 0.7]
+        confidence = min(max_score / 5.0, 1.0)
+        
+        if len(top_formats) == 1:
+            final = top_formats[0]
+        elif 'chart' in top_formats and 'text' in top_formats:
+            final = 'chart_and_text'
+        elif 'table' in top_formats and 'text' in top_formats:
+            final = 'table_and_text'
+        else:
+            final = top_formats[0]
+        
+        return OutputPreference(final, confidence, ' | '.join(reasons[:3]))
+
+
+# ============================================================================
+# DETAILED SCHEMA
+# ============================================================================
+
+DETAILED_SCHEMA = """
+DATABASE SCHEMA - SeaTac Airport Operations (MySQL)
+
+=== TABLE 1: flight ===
+- call_sign (VARCHAR) - Flight identifier, USE FOR JOINS - Examples: 'QTA1', 'ZYX966'
+- aircraft_type (VARCHAR) - Aircraft model - Examples: 'B738', 'A321'
+- flight_number (VARCHAR) - Flight number
+- operation (ENUM) - 'ARRIVAL' or 'DEPARTURE'
+
+=== TABLE 2: flight_event ===
+- call_sign (VARCHAR) - Links to flight.call_sign - USE FOR JOINS
+- operation (ENUM) - 'ARRIVAL' or 'DEPARTURE' - MUST MATCH
+- event_type (VARCHAR) - 'Actual_Off_Block', 'Actual_Take_Off', 'Actual_Landing', 'Actual_In_Block'
+- event_time (DATETIME) - When event occurred
+- location (VARCHAR) - Gate, runway, or taxiway
+
+=== TABLE 3: aircraft_type ===
+- aircraft_type (VARCHAR, PRIMARY KEY)
+- weight_class (VARCHAR) - 'L', 'M', 'H'
+- wingspan_ft, wingspan_m (DECIMAL)
+
+=== TAXI TIME CALCULATIONS ===
+Taxi-out: TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)
+Taxi-in: TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)
+
+ALWAYS filter: BETWEEN 1 AND 120
 """
 
 
+# ============================================================================
+# OpenRouter LLM Wrapper
+# ============================================================================
+
+class OpenRouterLLM:
+    """Wrapper for OpenRouter API"""
+    
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+    
+    async def ainvoke(self, messages, temperature: float = 0.1):
+        """Call OpenRouter API"""
+        if isinstance(messages, list):
+            formatted_messages = []
+            for msg in messages:
+                if isinstance(msg, dict):
+                    formatted_messages.append(msg)
+                else:
+                    formatted_messages.append({"role": "user", "content": str(msg)})
+        else:
+            formatted_messages = [{"role": "user", "content": str(messages)}]
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "SeaTac Operations Intelligence"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": formatted_messages,
+            "temperature": temperature,
+            "max_tokens": 2000
+        }
+        
+        response = requests.post(OPENROUTER_URL, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            raise Exception(f"OpenRouter API error: {response.status_code}")
+        
+        result = response.json()
+        content = result['choices'][0]['message']['content']
+        
+        class Response:
+            def __init__(self, text):
+                self.content = text
+        
+        return Response(content)
+
+
+# Initialize Modal and OpenRouter
+modal_generator = ModalSQLGenerator(MODAL_ENDPOINT, USE_MODAL_MODEL)
+llm = OpenRouterLLM(OPENROUTER_API_KEY, OPENROUTER_MODEL) if OPENROUTER_API_KEY else None
+
+
+# ============================================================================
 # Pydantic Models
+# ============================================================================
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1)
-    use_case_number: Optional[int] = Field(None, ge=1, le=11)
-    max_iterations: Optional[int] = Field(8)
 
 class QueryResponse(BaseModel):
     success: bool
@@ -108,20 +479,27 @@ class QueryResponse(BaseModel):
     sql_queries: Optional[List[str]] = None
     data: Optional[List[Dict[str, Any]]] = None
     insights: Optional[List[str]] = None
-    visualization_suggestion: Optional[str] = None
     chart: Optional[Dict[str, Any]] = None
+    output_format: Optional[str] = None
+    output_confidence: Optional[float] = None
+    sql_source: Optional[str] = None  # 'modal', 'openrouter', or 'prebuilt'
 
 class HealthResponse(BaseModel):
     status: str
     model: str
-    langchain_enabled: bool
-    agent_enabled: bool
-    seatac_use_cases_supported: int
-    tools_available: List[str]
+    modal_enabled: bool
+    modal_endpoint: Optional[str]
+    openrouter_enabled: bool
+    database_status: str
+    version: str
 
+
+# ============================================================================
+# Database Manager
+# ============================================================================
 
 class DatabaseManager:
-    """Database connection and query execution with Decimal handling"""
+    """Database connection and query execution"""
     
     def __init__(self):
         self.db_config = {
@@ -149,7 +527,7 @@ class DatabaseManager:
             cursor.close()
             connection.close()
             
-            # Convert Decimal and datetime to JSON-serializable types
+            # Convert Decimal, datetime, date, and other non-serializable types
             cleaned_results = []
             for row in results:
                 cleaned_row = {}
@@ -158,10 +536,17 @@ class DatabaseManager:
                         cleaned_row[key] = float(value)
                     elif isinstance(value, datetime):
                         cleaned_row[key] = value.isoformat()
+                    elif isinstance(value, date):
+                        cleaned_row[key] = value.isoformat()
                     elif value is None:
                         cleaned_row[key] = None
                     else:
-                        cleaned_row[key] = value
+                        # Try to serialize, convert to string if fails
+                        try:
+                            json.dumps(value)
+                            cleaned_row[key] = value
+                        except (TypeError, ValueError):
+                            cleaned_row[key] = str(value)
                 cleaned_results.append(cleaned_row)
             
             return {
@@ -180,406 +565,453 @@ class DatabaseManager:
             }
 
 
-# LangChain Tool Classes
-class SeaTacQueryTool(BaseTool):
-    """LangChain tool for executing SQL queries"""
-    name: str = "query_seatac_database"
-    description: str = "Execute SQL queries on SeaTac airport operations database"
-    
-    db_manager: Any = Field(default=None)
-    
-    def _run(self, query: str, run_manager: Optional[CallbackManagerForToolRun] = None) -> str:
-        query = self._clean_sql(query)
-        result = self.db_manager.execute_query(query)
-        
-        if result['success']:
-            return json.dumps({
-                'success': True,
-                'row_count': result['row_count'],
-                'data': result['data'][:15],
-                'message': f"Retrieved {result['row_count']} rows"
-            }, cls=DecimalEncoder)
-        else:
-            return json.dumps({
-                'success': False,
-                'error': result.get('error', 'Unknown error'),
-                'message': 'Query failed'
-            })
-    
-    def _clean_sql(self, sql: str) -> str:
-        sql = re.sub(r'```sql\s*', '', sql, flags=re.IGNORECASE)
-        sql = re.sub(r'```\s*', '', sql)
-        sql = sql.replace('`', '')
-        
-        if 'SELECT' in sql.upper():
-            select_pos = sql.upper().find('SELECT')
-            sql = sql[select_pos:]
-        
-        sql = re.sub(r';+\s*$', '', sql).strip()
-        
-        if 'LIMIT' not in sql.upper():
-            sql += ' LIMIT 200'
-        
-        return sql.strip()
-
-
-class SeaTacUseCaseTool(BaseTool):
-    """LangChain tool for SeaTac use case templates"""
-    name: str = "get_seatac_use_case"
-    description: str = "Get SQL query templates for SeaTac's 11 operational use cases (1-11)"
-    
-    def _run(self, query: str, run_manager: Optional[CallbackManagerForToolRun] = None) -> str:
-        use_cases = {
-            "1": {
-                "name": "Taxi-In Performance by Aircraft Type",
-                "sql": """SELECT 
-    f.aircraft_type,
-    at.weight_class,
-    AVG(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as avg_taxi_in_minutes,
-    MIN(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as min_taxi_in_minutes,
-    MAX(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as max_taxi_in_minutes,
-    COUNT(*) as flight_count
-FROM flight f
-JOIN aircraft_type at ON f.aircraft_type = at.aircraft_type
-JOIN flight_event landing ON f.call_sign = landing.call_sign AND landing.event_type = 'Actual_Landing'
-JOIN flight_event inblock ON f.call_sign = inblock.call_sign AND inblock.event_type = 'Actual_In_Block'
-WHERE f.operation = 'ARRIVAL' AND TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time) BETWEEN 1 AND 120
-GROUP BY f.aircraft_type, at.weight_class
-HAVING flight_count >= 3
-ORDER BY avg_taxi_in_minutes DESC"""
-            },
-            "2": {
-                "name": "Taxi-Out Performance by Hour",
-                "sql": """SELECT 
-    HOUR(offblock.event_time) as hour_of_day,
-    AVG(TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)) as avg_taxi_out_minutes,
-    COUNT(*) as flight_count
-FROM flight f
-JOIN flight_event offblock ON f.call_sign = offblock.call_sign AND offblock.event_type = 'Actual_Off_Block'
-JOIN flight_event takeoff ON f.call_sign = takeoff.call_sign AND takeoff.event_type = 'Actual_Take_Off'
-WHERE f.operation = 'DEPARTURE' AND TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time) BETWEEN 1 AND 120
-GROUP BY hour_of_day
-ORDER BY hour_of_day"""
-            },
-            "5": {
-                "name": "Wheels-Up Delay Tracker",
-                "sql": """SELECT 
-    f.aircraft_type,
-    at.weight_class,
-    AVG(TIMESTAMPDIFF(MINUTE, scheduled.event_time, takeoff.event_time)) as avg_delay_minutes,
-    COUNT(*) as flight_count
-FROM flight f
-JOIN aircraft_type at ON f.aircraft_type = at.aircraft_type
-JOIN flight_event scheduled ON f.call_sign = scheduled.call_sign AND scheduled.event_type = 'Scheduled_Take_Off'
-JOIN flight_event takeoff ON f.call_sign = takeoff.call_sign AND takeoff.event_type = 'Actual_Take_Off'
-WHERE f.operation = 'DEPARTURE'
-GROUP BY f.aircraft_type, at.weight_class
-HAVING flight_count >= 3
-ORDER BY avg_delay_minutes DESC"""
-            },
-            "6": {
-                "name": "Weight Class Comparison",
-                "sql": """SELECT 
-    at.weight_class,
-    AVG(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as avg_taxi_in_minutes,
-    AVG(TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)) as avg_taxi_out_minutes,
-    COUNT(DISTINCT f.call_sign) as total_flights
-FROM aircraft_type at
-JOIN flight f ON at.aircraft_type = f.aircraft_type
-LEFT JOIN flight_event landing ON f.call_sign = landing.call_sign AND landing.event_type = 'Actual_Landing'
-LEFT JOIN flight_event inblock ON f.call_sign = inblock.call_sign AND inblock.event_type = 'Actual_In_Block'
-LEFT JOIN flight_event offblock ON f.call_sign = offblock.call_sign AND offblock.event_type = 'Actual_Off_Block'
-LEFT JOIN flight_event takeoff ON f.call_sign = takeoff.call_sign AND takeoff.event_type = 'Actual_Take_Off'
-WHERE at.weight_class IN ('L', 'M', 'H')
-GROUP BY at.weight_class
-ORDER BY FIELD(at.weight_class, 'L', 'M', 'H')"""
-            }
-        }
-        
-        query_str = str(query).strip()
-        
-        if query_str in use_cases:
-            case = use_cases[query_str]
-            return json.dumps({
-                'success': True,
-                'use_case': case['name'],
-                'sql': case['sql'].strip()
-            })
-        
-        return json.dumps({
-            'success': True,
-            'use_case_number': '1',
-            'use_case': use_cases['1']['name'],
-            'sql': use_cases['1']['sql'].strip()
-        })
-
-
-class AnalyzeSeaTacDataTool(BaseTool):
-    """LangChain tool for analyzing operational data"""
-    name: str = "analyze_seatac_data"
-    description: str = "Analyze SeaTac operational data to extract insights"
-    
-    def _run(self, data: str, run_manager: Optional[CallbackManagerForToolRun] = None) -> str:
-        try:
-            data_obj = json.loads(data) if isinstance(data, str) else data
-            
-            if not data_obj or not isinstance(data_obj, list):
-                return json.dumps({'error': 'Invalid data format'})
-            
-            insights = []
-            
-            numeric_cols = []
-            if len(data_obj) > 0:
-                for key, value in data_obj[0].items():
-                    if isinstance(value, (int, float, Decimal)):
-                        numeric_cols.append(key)
-            
-            for col in numeric_cols:
-                values = [float(row[col]) if isinstance(row[col], Decimal) else row[col] 
-                         for row in data_obj if row.get(col) is not None]
-                if values:
-                    mean_val = sum(values) / len(values)
-                    max_val = max(values)
-                    
-                    if max_val > mean_val * 1.5:
-                        insights.append(f"High variability in {col}: max ({max_val:.1f}) is 50%+ above average ({mean_val:.1f})")
-            
-            return json.dumps({'success': True, 'insights': insights})
-            
-        except Exception as e:
-            return json.dumps({'error': f'Analysis failed: {str(e)}'})
-
+# ============================================================================
+# Chart Generator
+# ============================================================================
 
 class ChartGenerator:
-    """Generate Chart.js configurations from query results"""
+    """Generate Chart.js configurations"""
     
     @staticmethod
-    def generate_chart(data: List[Dict], use_case: Optional[str] = None) -> Optional[Dict]:
-        if not data or len(data) == 0:
+    def generate_chart(data: List[Dict], title: str = "Analysis Results") -> Optional[Dict]:
+        if not data:
             return None
         
         first_row = data[0]
         keys = list(first_row.keys())
         
+        # Detect label and value fields
         label_field = None
         value_field = None
         
         for key in keys:
-            if any(term in key.lower() for term in ['type', 'class', 'hour', 'runway']):
+            if any(term in key.lower() for term in ['hour', 'type', 'class', 'runway']):
                 label_field = key
                 break
         
         for key in keys:
             if any(term in key.lower() for term in ['avg', 'count', 'total', 'minutes']):
-                value_field = key
-                break
+                if value_field is None and 'avg' in key.lower():
+                    value_field = key
         
         if not label_field:
             label_field = keys[0]
         if not value_field:
             value_field = keys[1] if len(keys) > 1 else keys[0]
         
-        labels = [str(row.get(label_field, 'Unknown')) for row in data[:20]]
-        values = [float(row.get(value_field, 0)) for row in data[:20]]
+        # Format labels
+        labels = []
+        for row in data[:24]:
+            label = str(row.get(label_field, ''))
+            if 'hour' in label_field.lower() and label.isdigit():
+                label = f"{int(label):02d}:00"
+            labels.append(label)
         
-        chart_type = 'bar'
-        if 'hour' in label_field.lower():
-            chart_type = 'line'
+        values = [float(row.get(value_field, 0)) for row in data[:24]]
         
-        color = 'rgba(59, 130, 246, 0.7)'
+        is_temporal = 'hour' in label_field.lower()
+        chart_type = 'line' if is_temporal else 'bar'
         
         return {
             'type': chart_type,
-            'title': use_case or 'Analysis Results',
+            'title': title,
             'data': {
                 'labels': labels,
                 'datasets': [{
                     'label': value_field.replace('_', ' ').title(),
                     'data': values,
-                    'backgroundColor': color,
-                    'borderColor': color.replace('0.7', '1'),
+                    'backgroundColor': 'rgba(59, 130, 246, 0.7)' if chart_type == 'bar' else 'rgba(59, 130, 246, 0.2)',
+                    'borderColor': 'rgba(59, 130, 246, 1)',
                     'borderWidth': 2,
                     'tension': 0.4 if chart_type == 'line' else 0,
                     'fill': chart_type == 'line'
                 }]
+            },
+            'options': {
+                'responsive': True,
+                'scales': {
+                    'y': {
+                        'beginAtZero': True,
+                        'title': {'display': True, 'text': 'Minutes'}
+                    }
+                }
             }
         }
 
 
-class SeaTacIntelligenceAgent:
-    """LangChain-powered agent for SeaTac operations"""
+# ============================================================================
+# Enhanced Response Controller
+# ============================================================================
+
+class EnhancedResponseController:
+    """Controls output generation"""
     
-    def __init__(self, llm, db_manager):
-        self.llm = llm
+    def __init__(self, format_classifier: OutputFormatClassifier, chart_generator: ChartGenerator):
+        self.classifier = format_classifier
+        self.chart_generator = chart_generator
+    
+    def process_output(self, user_query: str, result: Dict, insights: str, 
+                      title: str = "Analysis Results") -> Dict:
+        """Process and format output"""
+        output_pref = self.classifier.classify(user_query)
+        
+        print(f"[Output] Format: {output_pref.format} (confidence: {output_pref.confidence:.2f})")
+        
+        response_data = {
+            'output_format': output_pref.format,
+            'output_confidence': output_pref.confidence
+        }
+        
+        if output_pref.show_text:
+            response_data['message'] = insights
+        else:
+            response_data['message'] = f"Found {result.get('row_count', 0)} results"
+        
+        if output_pref.show_chart and result.get('data'):
+            chart = self.chart_generator.generate_chart(result['data'], title)
+            if chart:
+                response_data['chart'] = chart
+        
+        if output_pref.show_table and result.get('data'):
+            response_data['data'] = result['data'][:100]
+        
+        return response_data
+
+
+# ============================================================================
+# Enhanced SeaTac Agent (Modal-First)
+# ============================================================================
+
+class SeaTacAgent:
+    """Enhanced agent with Modal Code Llama integration"""
+    
+    def __init__(self, modal_gen: ModalSQLGenerator, openrouter_llm, db_manager: DatabaseManager):
+        self.modal_gen = modal_gen
+        self.llm = openrouter_llm
         self.db_manager = db_manager
         self.chart_generator = ChartGenerator()
+        self.temporal_extractor = TemporalContextExtractor()
+        self.format_classifier = OutputFormatClassifier()
+        self.response_controller = EnhancedResponseController(self.format_classifier, self.chart_generator)
         
-        self.tools = [
-            SeaTacQueryTool(db_manager=db_manager),
-            SeaTacUseCaseTool(),
-            AnalyzeSeaTacDataTool()
-        ]
-        
-        self.agent = self._create_langchain_agent()
+        # Pre-built use cases (fallback)
+        self.use_cases = {
+            "1": {
+                "name": "Taxi-In Performance by Aircraft Type",
+                "keywords": ["taxi-in", "taxi in", "aircraft type"],
+                "sql": """
+                    SELECT f.aircraft_type, 
+                           at.weight_class,
+                           AVG(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as avg_taxi_in_minutes,
+                           MIN(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as min_taxi_in,
+                           MAX(TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)) as max_taxi_in,
+                           COUNT(*) as flight_count
+                    FROM flight f
+                    JOIN aircraft_type at ON f.aircraft_type = at.aircraft_type
+                    JOIN flight_event landing ON f.call_sign = landing.call_sign 
+                         AND landing.event_type = 'Actual_Landing' 
+                         AND landing.operation = 'ARRIVAL'
+                    JOIN flight_event inblock ON f.call_sign = inblock.call_sign
+                         AND inblock.event_type = 'Actual_In_Block' 
+                         AND inblock.operation = 'ARRIVAL'
+                    WHERE f.operation = 'ARRIVAL'
+                      AND TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time) BETWEEN 1 AND 120
+                    GROUP BY f.aircraft_type, at.weight_class
+                    HAVING flight_count >= 2
+                    ORDER BY avg_taxi_in_minutes DESC
+                    LIMIT 20
+                """
+            },
+            "2": {
+                "name": "Taxi-Out Performance by Hour",
+                "keywords": ["taxi-out", "taxi out", "hour", "hourly"],
+                "sql": """
+                    SELECT HOUR(offblock.event_time) as hour_of_day,
+                           AVG(TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)) as avg_taxi_out_minutes,
+                           COUNT(*) as flight_count
+                    FROM flight f
+                    JOIN flight_event offblock ON f.call_sign = offblock.call_sign 
+                         AND offblock.event_type = 'Actual_Off_Block' 
+                         AND offblock.operation = 'DEPARTURE'
+                    JOIN flight_event takeoff ON f.call_sign = takeoff.call_sign
+                         AND takeoff.event_type = 'Actual_Take_Off' 
+                         AND takeoff.operation = 'DEPARTURE'
+                    WHERE f.operation = 'DEPARTURE'
+                      AND TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time) BETWEEN 1 AND 120
+                    GROUP BY HOUR(offblock.event_time)
+                    ORDER BY hour_of_day
+                """
+            }
+        }
     
-    def _extract_text_from_response(self, response) -> str:
-        """Extract text from LLM response - handles all formats"""
-        if hasattr(response, 'content'):
-            content = response.content
-            
-            if isinstance(content, str):
-                return content.strip()
-            elif isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict) and 'text' in block:
-                        text_parts.append(block['text'])
-                    else:
-                        text_parts.append(str(block))
-                return ' '.join(text_parts).strip()
+    async def generate_sql(self, query: str) -> Dict[str, Any]:
+        """
+        Generate SQL with 3-tier hierarchy:
+        1. Modal fine-tuned Code Llama (BEST)
+        2. OpenRouter (GOOD) 
+        3. Pre-built SQL (GUARANTEED)
+        """
+        
+        # TIER 1: Try Modal fine-tuned Code Llama
+        if self.modal_gen.enabled:
+            modal_sql = await self.modal_gen.generate_sql(query)
+            if modal_sql:
+                print(f"✅ [SQL] Using Modal fine-tuned Code Llama")
+                return {
+                    'success': True,
+                    'sql': modal_sql,
+                    'source': 'modal'
+                }
             else:
-                return str(content).strip()
+                print(f"⚠️  [SQL] Modal failed, trying OpenRouter...")
         
-        return str(response).strip()
-    
-    def _create_langchain_agent(self):
-        try:
-            agent = create_agent(model=self.llm, tools=self.tools)
-            print("✅ LangChain agent created")
-            return agent
-        except Exception as e:
-            print(f"⚠️  Agent creation failed: {e}")
-            return None
-    
-    async def process_query(self, query: str, max_iterations: int = 5) -> Dict[str, Any]:
-        if self.agent:
+        # TIER 2: Try OpenRouter
+        if self.llm:
             try:
-                result = await self.agent.ainvoke({"messages": [HumanMessage(content=query)]})
-                messages = result.get('messages', [])
-                final_message = messages[-1] if messages else None
-                answer = self._extract_text_from_response(final_message) if final_message else "No response"
+                print(f"🌐 [SQL] Using OpenRouter ({OPENROUTER_MODEL})...")
                 
-                return {'success': True, 'answer': answer, 'reasoning_steps': [], 'sql_queries': [], 'insights': []}
-            except Exception as e:
-                print(f"⚠️  Agent failed: {e}")
-        
-        return await self._manual_tool_orchestration(query)
-    
-    async def _manual_tool_orchestration(self, query: str) -> Dict[str, Any]:
-        try:
-            reasoning_steps = []
-            sql_queries = []
-            insights = []
-            use_case = None
-            final_data = []
-            
-            # Step 1: Analyze query
-            analysis_prompt = f"Analyze: '{query}'\n\nWhich SeaTac use case (1, 2, 5, or 6)? Respond with just the number or 'custom'."
-            
-            analysis_response = await self.llm.ainvoke([HumanMessage(content=analysis_prompt)])
-            analysis_text = self._extract_text_from_response(analysis_response)
-            
-            reasoning_steps.append({'action': 'analyze_query', 'input': query, 'observation': analysis_text})
-            
-            # Step 2: Get SQL
-            use_case_match = re.search(r'\b([1256])\b', analysis_text)
-            sql_query = None
-            
-            if use_case_match:
-                use_case_num = use_case_match.group(1)
-                use_case_result = self.tools[1]._run(use_case_num)
-                use_case_data = json.loads(use_case_result)
+                sql_prompt = f"""{DETAILED_SCHEMA}
+
+Generate SQL for: "{query}"
+
+Return ONLY the SQL query, no explanations.
+"""
                 
-                if use_case_data.get('success') and 'sql' in use_case_data:
-                    sql_query = use_case_data['sql'].strip()
-                    use_case = use_case_data.get('use_case')
-                    sql_queries.append(sql_query)
-                    
-                    reasoning_steps.append({'action': 'get_use_case', 'input': use_case_num, 'observation': f"Use Case {use_case_num}"})
-            
-            # Step 3: Generate custom SQL if needed
-            if not sql_query:
-                sql_prompt = f"Generate SQL for: '{query}'\n\n{SCHEMA_CONTEXT}\n\nReturn ONLY SQL:"
-                sql_response = await self.llm.ainvoke([HumanMessage(content=sql_prompt)])
-                sql_query = self._extract_text_from_response(sql_response)
-                sql_query = self.tools[0]._clean_sql(sql_query)
-                sql_queries.append(sql_query)
+                response = await self.llm.ainvoke(
+                    [{"role": "user", "content": sql_prompt}],
+                    temperature=0.05
+                )
                 
-                reasoning_steps.append({'action': 'generate_sql', 'input': 'custom', 'observation': 'Generated'})
-            
-            # Step 4: Execute
-            if sql_query:
-                result = self.tools[0]._run(sql_query)
-                result_data = json.loads(result)
+                sql = self._clean_sql(response.content)
                 
-                reasoning_steps.append({'action': 'query_database', 'input': sql_query[:100], 'observation': f"{result_data.get('row_count', 0)} rows"})
-                
-                if result_data.get('success') and result_data.get('data'):
-                    final_data = result_data['data']
-                    
-                    analysis = self.tools[2]._run(json.dumps(final_data, cls=DecimalEncoder))
-                    analysis_data = json.loads(analysis)
-                    
-                    if analysis_data.get('insights'):
-                        insights.extend(analysis_data['insights'])
-                    
-                    reasoning_steps.append({'action': 'analyze_data', 'input': 'analysis', 'observation': f"{len(insights)} insights"})
-                    
-                    # Step 5: Final answer
-                    final_prompt = f"Answer: '{query}'\n\nData: {json.dumps(final_data[:3], cls=DecimalEncoder)}\n\nProvide 2-3 sentences:"
-                    final_response = await self.llm.ainvoke([HumanMessage(content=final_prompt)])
-                    answer = self._extract_text_from_response(final_response)
-                    
-                    chart_config = self.chart_generator.generate_chart(final_data, use_case)
-                    
+                if sql and 'SELECT' in sql.upper():
+                    print(f"✅ [SQL] OpenRouter generated SQL")
                     return {
                         'success': True,
-                        'answer': answer,
-                        'use_case': use_case,
-                        'reasoning_steps': reasoning_steps,
-                        'sql_queries': sql_queries,
-                        'insights': insights,
-                        'data': final_data[:50],
-                        'row_count': len(final_data),
-                        'chart': chart_config
+                        'sql': sql,
+                        'source': 'openrouter'
                     }
+                
+            except Exception as e:
+                print(f"❌ [SQL] OpenRouter error: {e}")
+        
+        # TIER 3: Pre-built SQL (guaranteed fallback)
+        print(f"📄 [SQL] Using pre-built SQL (fallback)")
+        prebuilt = self._get_prebuilt_sql(query)
+        return {
+            'success': True,
+            'sql': prebuilt,
+            'source': 'prebuilt'
+        }
+    
+    def _get_prebuilt_sql(self, query: str) -> str:
+        """Get pre-built SQL based on query keywords"""
+        query_lower = query.lower()
+        
+        for use_case_id, use_case in self.use_cases.items():
+            if any(kw in query_lower for kw in use_case['keywords']):
+                return use_case['sql'].strip()
+        
+        # Default fallback
+        return "SELECT * FROM flight LIMIT 10"
+    
+    def _clean_sql(self, sql_text: str) -> str:
+        """Clean SQL from LLM"""
+        sql_text = re.sub(r'```sql\s*', '', sql_text, flags=re.IGNORECASE)
+        sql_text = re.sub(r'```\s*', '', sql_text)
+        sql_text = sql_text.strip()
+        
+        if 'LIMIT' not in sql_text.upper():
+            sql_text += ' LIMIT 100'
+        
+        return sql_text
+    
+    async def process_query(self, query: str) -> Dict[str, Any]:
+        """Process query with all enhancements"""
+        try:
+            reasoning_steps = []
             
-            return {'success': True, 'answer': "I need more information.", 'reasoning_steps': reasoning_steps}
+            print(f"\n{'='*80}")
+            print(f"📥 Query: {query}")
+            print(f"{'='*80}")
+            
+            # Generate SQL (Modal → OpenRouter → Pre-built)
+            sql_result = await self.generate_sql(query)
+            sql_query = sql_result['sql']
+            sql_source = sql_result['source']
+            
+            reasoning_steps.append({
+                'action': 'generate_sql',
+                'input': query,
+                'observation': f"Generated via {sql_source}"
+            })
+            
+            # Apply temporal filtering
+            enhanced_sql = self.temporal_extractor.inject_temporal_filter(sql_query, query)
+            
+            if enhanced_sql != sql_query:
+                reasoning_steps.append({
+                    'action': 'apply_temporal_filter',
+                    'input': query,
+                    'observation': 'Applied time-based filtering'
+                })
+            
+            # Execute SQL
+            result = self.db_manager.execute_query(enhanced_sql)
+            
+            reasoning_steps.append({
+                'action': 'execute_sql',
+                'input': enhanced_sql[:100] + '...',
+                'observation': f"Retrieved {result.get('row_count', 0)} rows"
+            })
+            
+            if not result['success']:
+                return {
+                    'success': False,
+                    'answer': f"SQL execution failed: {result.get('error')}",
+                    'reasoning_steps': reasoning_steps,
+                    'sql_queries': [enhanced_sql],
+                    'sql_source': sql_source
+                }
+            
+            if not result['data']:
+                return {
+                    'success': True,
+                    'answer': "No data found for your query.",
+                    'reasoning_steps': reasoning_steps,
+                    'sql_queries': [enhanced_sql],
+                    'row_count': 0,
+                    'sql_source': sql_source
+                }
+            
+            # Generate insights
+            insights = await self._generate_insights(query, result['data'])
+            
+            reasoning_steps.append({
+                'action': 'generate_insights',
+                'input': f"{len(result['data'])} rows",
+                'observation': insights[:100] + '...'
+            })
+            
+            # Process output format
+            output_data = self.response_controller.process_output(
+                user_query=query,
+                result=result,
+                insights=insights,
+                title="SeaTac Operations Analysis"
+            )
+            
+            return {
+                'success': True,
+                'answer': output_data.get('message', insights),
+                'use_case': 'Dynamic Analysis',
+                'reasoning_steps': reasoning_steps,
+                'sql_queries': [enhanced_sql],
+                'data': output_data.get('data', result['data'][:100]),
+                'row_count': result['row_count'],
+                'chart': output_data.get('chart'),
+                'insights': [insights],
+                'output_format': output_data.get('output_format'),
+                'output_confidence': output_data.get('output_confidence'),
+                'sql_source': sql_source
+            }
             
         except Exception as e:
-            return {'success': False, 'error': str(e), 'answer': f'Error: {str(e)}'}
+            print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'answer': f'Error: {str(e)}',
+                'reasoning_steps': reasoning_steps if 'reasoning_steps' in locals() else []
+            }
+    
+    async def _generate_insights(self, query: str, data: List[Dict]) -> str:
+        """Generate insights from results"""
+        if not data:
+            return "No data available."
+        
+        # Calculate statistics
+        numeric_fields = {}
+        for key in data[0].keys():
+            if any(term in key.lower() for term in ['avg', 'min', 'max', 'count']):
+                try:
+                    values = [float(row.get(key, 0)) for row in data if row.get(key) is not None]
+                    if values:
+                        numeric_fields[key] = {
+                            'avg': sum(values) / len(values),
+                            'min': min(values),
+                            'max': max(values)
+                        }
+                except:
+                    pass
+        
+        if not self.llm:
+            # Fallback if no LLM
+            return f"Found {len(data)} results."
+        
+        insights_prompt = f"""Analyze this airport operations data and provide 2-3 sentences with specific numbers.
+
+QUESTION: "{query}"
+RECORDS: {len(data)}
+
+SAMPLE DATA:
+{json.dumps(data[:3], indent=2, cls=DecimalEncoder)}
+
+STATISTICS:
+{json.dumps(numeric_fields, indent=2, cls=DecimalEncoder)}
+
+Provide clear insights with specific numbers:
+"""
+        
+        try:
+            response = await self.llm.ainvoke(
+                [{"role": "user", "content": insights_prompt}],
+                temperature=0.4
+            )
+            return response.content.strip()
+        except:
+            return f"Found {len(data)} results with various taxi time patterns."
 
 
+# ============================================================================
 # Initialize
+# ============================================================================
+
 db_manager = DatabaseManager()
-agent_system = SeaTacIntelligenceAgent(llm, db_manager) if llm else None
+agent_system = SeaTacAgent(modal_generator, llm, db_manager) if (modal_generator or llm) else None
 
 
+# ============================================================================
 # API Endpoints
+# ============================================================================
+
 @app.get("/")
 async def root():
-    return {"message": "SeaTac Operations Intelligence", "version": "5.0.0"}
+    return {
+        "message": "SeaTac Operations Intelligence - Modal Edition v7.0",
+        "version": "7.0.0",
+        "modal_enabled": modal_generator.enabled,
+        "openrouter_model": OPENROUTER_MODEL,
+        "sql_hierarchy": [
+            "1. Modal fine-tuned Code Llama (your custom model)",
+            "2. OpenRouter (general purpose fallback)",
+            "3. Pre-built SQL (guaranteed fallback)"
+        ]
+    }
 
 
 @app.post("/api/query", response_model=QueryResponse)
 async def handle_query(request: QueryRequest):
+    """Process queries - uses Modal fine-tuned model first"""
     try:
         if not request.query or len(request.query.strip()) < 2:
             raise HTTPException(status_code=400, detail="Please provide a valid query")
         
         if not agent_system:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
+            raise HTTPException(status_code=503, detail="No SQL generator configured")
         
-        result = await agent_system.process_query(request.query, request.max_iterations)
-        
-        viz_suggestion = None
-        if result.get('use_case'):
-            if 'hour' in result['use_case'].lower():
-                viz_suggestion = "line_chart"
-            elif 'weight' in result['use_case'].lower():
-                viz_suggestion = "grouped_bar_chart"
-            else:
-                viz_suggestion = "bar_chart"
+        result = await agent_system.process_query(request.query)
         
         return QueryResponse(
             success=result.get('success', False),
@@ -590,12 +1022,12 @@ async def handle_query(request: QueryRequest):
             sql_queries=result.get('sql_queries', []),
             data=result.get('data'),
             insights=result.get('insights', []),
-            visualization_suggestion=viz_suggestion,
-            chart=result.get('chart')
+            chart=result.get('chart'),
+            output_format=result.get('output_format'),
+            output_confidence=result.get('output_confidence'),
+            sql_source=result.get('sql_source')
         )
         
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
@@ -604,44 +1036,60 @@ async def handle_query(request: QueryRequest):
 async def health_check():
     return HealthResponse(
         status="healthy",
-        model=GEMINI_MODEL,
-        langchain_enabled=bool(llm),
-        agent_enabled=bool(agent_system),
-        seatac_use_cases_supported=11,
-        tools_available=["query_seatac_database", "get_seatac_use_case", "analyze_seatac_data"] if agent_system else []
+        model=OPENROUTER_MODEL,
+        modal_enabled=modal_generator.enabled,
+        modal_endpoint=MODAL_ENDPOINT if modal_generator.enabled else None,
+        openrouter_enabled=bool(llm),
+        database_status="online" if db_manager.test_connection() else "offline",
+        version="7.0.0"
     )
-
-
-@app.get("/api/use-cases")
-async def list_use_cases():
-    return {
-        "use_cases": [
-            {"number": 1, "name": "Taxi-In Performance by Aircraft Type"},
-            {"number": 2, "name": "Taxi-Out Performance by Hour"},
-            {"number": 3, "name": "Movement Area Occupancy"},
-            {"number": 4, "name": "Runway Occupancy Time"},
-            {"number": 5, "name": "Wheels-Up Delay Tracker"},
-            {"number": 6, "name": "Weight Class Comparison"},
-            {"number": 7, "name": "Taxiway Utilization"},
-            {"number": 8, "name": "Landing to In-Block Duration"},
-            {"number": 9, "name": "Runway Utilization Rate"},
-            {"number": 10, "name": "Peak Hour Prediction"},
-            {"number": 11, "name": "Metal on Ground Report"}
-        ]
-    }
 
 
 @app.on_event("startup")
 async def startup_event():
-    print("=" * 70)
-    print("✈️  SeaTac Airport Operations Intelligence")
-    print("=" * 70)
-    print(f"LangChain: {'Enabled ✓' if llm else 'Disabled ✗'}")
-    print(f"Agent: {'Active ✓' if agent_system and agent_system.agent else 'Manual Mode ⚠️'}")
-    print(f"LLM Model: {GEMINI_MODEL}")
-    print(f"Database: {db_manager.db_config['database']}@{db_manager.db_config['host']}")
-    print(f"DB Status: {'Connected ✓' if db_manager.test_connection() else 'Disconnected ✗'}")
-    print("=" * 70)
+    print("\n" + "=" * 80)
+    print("✈️  SeaTac Operations Intelligence - MODAL EDITION v7.0")
+    print("=" * 80)
+    print(f"Version: 7.0.0")
+    
+    # Modal status
+    if modal_generator.enabled:
+        print(f"🦙 Modal Code Llama: ENABLED ✅")
+        print(f"   Endpoint: {MODAL_ENDPOINT}")
+        print(f"   Status: Your fine-tuned model (PRIMARY)")
+    else:
+        print(f"🦙 Modal Code Llama: DISABLED")
+        if USE_MODAL_MODEL and not MODAL_ENDPOINT:
+            print(f"   ⚠️  Enable by setting MODAL_ENDPOINT in .env")
+    
+    # OpenRouter status
+    if llm:
+        print(f"🌐 OpenRouter: Configured ✅ (FALLBACK)")
+        print(f"   Model: {OPENROUTER_MODEL}")
+    else:
+        print(f"🌐 OpenRouter: Not configured")
+    
+    # Database status
+    print(f"🗄️  Database: {db_manager.db_config['database']}@{db_manager.db_config['host']}")
+    if db_manager.test_connection():
+        print(f"   Status: Connected ✅")
+    else:
+        print(f"   Status: Disconnected ❌")
+    
+    print("\n📋 SQL Generation Hierarchy:")
+    print("   1️⃣  Modal fine-tuned Code Llama (your custom model)")
+    print("   2️⃣  OpenRouter (general purpose)")
+    print("   3️⃣  Pre-built SQL (guaranteed fallback)")
+    
+    print("\n✨ Enhancements v7.0:")
+    print("   ✓ Modal fine-tuned Code Llama integration")
+    print("   ✓ Temporal filtering (afternoon, morning, time ranges)")
+    print("   ✓ Output format classification (chart/table/text)")
+    print("   ✓ Smart 3-tier SQL generation")
+    print("   ✓ Enhanced reasoning and insights")
+    
+    print("\n🚀 Server starting on http://0.0.0.0:8000")
+    print("=" * 80 + "\n")
 
 
 if __name__ == '__main__':
