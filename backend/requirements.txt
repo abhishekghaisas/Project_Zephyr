@@ -23,4 +23,4 @@ groq==0.15.0
 jsonlines==4.0.0
 
 # Optional (for Modal deployment)
-modal==0.65.0
+modal==0.65.0requests==2.31.0

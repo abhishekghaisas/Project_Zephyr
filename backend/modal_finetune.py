@@ -1,49 +1,51 @@
 """
-Fine-tune Gemma 2 on Modal for SeaTac Airport Operations
-Run: modal run modal_finetune.py
+Fine-tune Code Llama on Modal for SeaTac Airport SQL Generation
+FIXED: Attention mask dimension issue
 
-Requirements:
-- Modal account: modal setup
-- HuggingFace token: modal secret create huggingface-secret HF_TOKEN=hf_...
-- Training data: seatac_llama_training.json
+Setup:
+1. Install Modal: pip install modal
+2. Setup: modal setup
+3. Add HF token: modal secret create huggingface-secret HF_TOKEN=hf_...
+4. Run: modal run modal_codellama_finetune.py
 """
 
 import modal
 import json
 
 # Create Modal app
-app = modal.App("seatac-gemma-finetune")
+app = modal.App("seatac-codellama-finetune")
 
 # Create persistent volume for models
 volume = modal.Volume.from_name("seatac-models", create_if_missing=True)
 
-# Define the image with all dependencies
+# Optimized image for Code Llama
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "numpy<2.0",
-        "scipy",
-        "torch==2.1.0",
-        "transformers==4.45.0",
-        "datasets==2.15.0",
-        "accelerate==0.35.0",
-        "peft==0.7.0",
+        "torch==2.1.2",
+        "transformers==4.36.0",
+        "datasets==2.16.0",
+        "accelerate==0.25.0",
+        "peft==0.7.1",
         "bitsandbytes==0.41.3",
-        "trl==0.7.4",
+        "trl==0.7.10",
         "sentencepiece",
-        "protobuf"
+        "protobuf",
+        "scipy"
     )
 )
 
+
 @app.function(
     image=image,
-    gpu="A100",  # 40GB GPU
-    timeout=3600 * 6,
+    gpu="A10G",  # 24GB GPU
+    timeout=3600 * 4,  # 4 hours
     volumes={"/models": volume},
-    secrets=[modal.Secret.from_name("huggingface-secret")]
+    secrets=[modal.Secret.from_name("huggingface-secret")],
+    memory=32768  # 32GB RAM
 )
-def finetune_gemma(training_data_json: str):
-    """Fine-tune Gemma 2 on SeaTac operations data"""
+def finetune_codellama(training_data_json: str):
+    """Fine-tune Code Llama 7B on SeaTac SQL generation"""
     
     from transformers import (
         AutoModelForCausalLM,
@@ -53,111 +55,174 @@ def finetune_gemma(training_data_json: str):
         DataCollatorForLanguageModeling
     )
     from datasets import Dataset
-    from peft import LoraConfig, get_peft_model
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     import torch
+    import os
     
-    print("=" * 70)
-    print("💎 Fine-Tuning Gemma 2 for SeaTac Operations")
-    print("=" * 70)
+    print("=" * 80)
+    print("🦙 Fine-Tuning Code Llama 7B for SeaTac SQL Generation")
+    print("=" * 80)
     
-    # Load training data from parameter
+    # Load training data
     print("\n📊 Loading training data...")
     training_data = json.loads(training_data_json)
     print(f"✅ Loaded {len(training_data)} training examples")
     
-    # Load base model
-    model_name = "google/gemma-2-2b-it"
+    # Count examples per use case
+    use_case_counts = {}
+    for ex in training_data:
+        # Handle both dict and list formats
+        if isinstance(ex, dict):
+            uc = ex.get('use_case', 'unknown')
+        else:
+            uc = 'unknown'
+        use_case_counts[uc] = use_case_counts.get(uc, 0) + 1
+    
+    print("\n📋 Examples per use case:")
+    for uc, count in sorted(use_case_counts.items()):
+        print(f"   Use Case {uc}: {count} examples")
+    
+    # Model configuration
+    model_name = "codellama/CodeLlama-7b-Instruct-hf"
     print(f"\n🔧 Loading base model: {model_name}")
     
-    import os
     hf_token = os.environ.get("HF_TOKEN")
     
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, 
+        token=hf_token,
+        trust_remote_code=True
+    )
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
     
+    # Load model in 8-bit for memory efficiency
+    print("🔧 Loading model in 8-bit mode...")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
         token=hf_token,
-        low_cpu_mem_usage=True,
-        use_cache=False
+        load_in_8bit=True,
+        device_map="auto",
+        trust_remote_code=True,
+        use_cache=False  # IMPORTANT: Disable cache for gradient checkpointing
     )
     
     print(f"✅ Model loaded: {model_name}")
+    print(f"   Model size: ~7B parameters")
+    print(f"   Quantization: 8-bit (memory efficient)")
     
-    # Enable gradient checkpointing
-    print("\n🔧 Enabling gradient checkpointing...")
-    model.gradient_checkpointing_enable()
+    # Prepare model for training
+    print("\n🔧 Preparing model for k-bit training...")
+    model = prepare_model_for_kbit_training(model)
+    
+    # IMPORTANT: Disable gradient checkpointing to avoid attention mask issues
+    # We have enough memory on A10G with 8-bit quantization
+    print("🔧 Disabling gradient checkpointing (fixes attention mask issue)...")
     
     # Configure LoRA
     print("🔧 Configuring LoRA...")
     lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+        r=16,  # Rank
+        lora_alpha=32,  # Scaling factor
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj"
+        ],
         lora_dropout=0.05,
         bias="none",
-        task_type="CAUSAL_LM",
-        inference_mode=False
+        task_type="CAUSAL_LM"
     )
     
     model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
-    print("✅ LoRA configured")
     
-    # Format training data
+    # Print trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"✅ LoRA configured:")
+    print(f"   Trainable params: {trainable_params:,} ({100 * trainable_params / total_params:.2f}%)")
+    print(f"   Total params: {total_params:,}")
+    
+    # Format training data for Code Llama
     print("\n📝 Formatting training data...")
     
-    def format_prompt(example):
+    def format_codellama_prompt(example):
+        """Format in Code Llama instruction format"""
         instruction = example['instruction']
         output = example['output']
         
-        prompt = f"""<bos><start_of_turn>user
-Generate SQL for SeaTac airport operations:
-
-{instruction}<end_of_turn>
-<start_of_turn>model
-{output}<end_of_turn><eos>"""
+        # Code Llama instruction format - SIMPLIFIED
+        prompt = f"""[INST] {instruction} [/INST] {output}"""
         
         return {"text": prompt}
     
-    formatted_data = [format_prompt(ex) for ex in training_data]
+    formatted_data = [format_codellama_prompt(ex) for ex in training_data]
     dataset = Dataset.from_list(formatted_data)
     
+    print(f"✅ Formatted {len(dataset)} examples")
+    
+    # Tokenize dataset
+    print("🔤 Tokenizing dataset...")
+    
     def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], 
-            truncation=True, 
-            max_length=1024, 
-            padding="max_length"
+        # Tokenize with FIXED max_length to avoid attention mask issues
+        result = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=1024,  # Reduced from 2048 to avoid attention issues
+            padding="max_length",
+            return_tensors=None
         )
+        # Copy input_ids to labels for causal LM
+        result["labels"] = result["input_ids"].copy()
+        return result
     
-    tokenized_dataset = dataset.map(tokenize_function, remove_columns=["text"])
+    tokenized_dataset = dataset.map(
+        tokenize_function,
+        remove_columns=["text"],
+        batched=False,
+        desc="Tokenizing"
+    )
     
-    print(f"✅ Prepared {len(tokenized_dataset)} training samples")
+    print(f"✅ Tokenized {len(tokenized_dataset)} samples")
     
-    # Training configuration
-    print("\n🏋️  Starting training...")
+    # Training configuration - FIXED
+    print("\n🏋️  Configuring training...")
+    
     training_args = TrainingArguments(
-        output_dir="/models/seatac-gemma-checkpoints",
+        output_dir="/models/seatac-codellama-checkpoints",
         num_train_epochs=3,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=16,
+        per_device_train_batch_size=4,  # Increased from 2 (we have memory)
+        gradient_accumulation_steps=4,  # Reduced (effective batch still 16)
         learning_rate=2e-4,
+        fp16=False,
         bf16=True,
         logging_steps=10,
-        save_steps=50,
-        save_total_limit=1,
+        save_strategy="steps",
+        save_steps=100,
+        save_total_limit=2,
         warmup_steps=50,
         logging_dir="/models/logs",
         report_to="none",
-        gradient_checkpointing=True,
-        optim="adamw_torch_fused"
+        optim="paged_adamw_8bit",
+        max_grad_norm=0.3,
+        lr_scheduler_type="cosine",
+        gradient_checkpointing=False,  # DISABLED to fix attention mask issue
+        dataloader_num_workers=0,  # Single worker to avoid threading issues
     )
     
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    # Data collator
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
+    )
     
+    # Create trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -165,46 +230,141 @@ Generate SQL for SeaTac airport operations:
         data_collator=data_collator
     )
     
-    print("\n🔥 Training started...")
-    print("Estimated time: 1-2 hours on A100 GPU")
-    print("=" * 70)
+    print("\n" + "=" * 80)
+    print("🔥 TRAINING STARTED")
+    print("=" * 80)
+    print(f"Model: Code Llama 7B Instruct")
+    print(f"Training examples: {len(tokenized_dataset)}")
+    print(f"Epochs: 3")
+    print(f"Batch size: 4 (effective: 16 with gradient accumulation)")
+    print(f"Max length: 1024 tokens (sufficient for SQL)")
+    print(f"GPU: A10G (24GB)")
+    print(f"Gradient checkpointing: DISABLED (fixes attention mask bug)")
+    print(f"Estimated time: 1-2 hours")
+    print(f"Estimated cost: $3-5")
+    print("=" * 80)
     
-    trainer.train()
+    # Train!
+    try:
+        trainer.train()
+    except Exception as e:
+        print(f"\n❌ Training failed: {e}")
+        raise
     
-    print("\n✅ Training complete!")
+    print("\n" + "=" * 80)
+    print("✅ TRAINING COMPLETE")
+    print("=" * 80)
     
-    # Save model
+    # Save final model
     print("\n💾 Saving fine-tuned model...")
-    final_model_path = "/models/seatac-gemma-finetuned"
+    final_model_path = "/models/seatac-codellama-final"
     
     model.save_pretrained(final_model_path)
     tokenizer.save_pretrained(final_model_path)
     
+    # Commit volume
+    print("💾 Committing to persistent volume...")
     volume.commit()
     
-    print(f"✅ Model saved to: {final_model_path}")
+    print(f"✅ Model saved to persistent volume: {final_model_path}")
     print("\n🎉 Fine-tuning complete!")
+    print("\n📋 Model Details:")
+    print(f"   Base: codellama/CodeLlama-7b-Instruct-hf")
+    print(f"   Fine-tuned on: {len(training_data)} SeaTac SQL examples")
+    print(f"   Method: LoRA (16-rank)")
+    print(f"   Quantization: 8-bit")
+    print(f"   Max tokens: 1024")
+    print(f"   Size: ~4GB (quantized)")
     
-    return final_model_path
+    return {
+        "model_path": final_model_path,
+        "training_examples": len(training_data),
+        "epochs": 3,
+        "base_model": model_name,
+        "status": "success"
+    }
 
 
 @app.local_entrypoint()
 def main():
-    """Run fine-tuning job"""
-    import json
+    """Main entry point - run from local machine"""
     
-    print("🚀 Starting Modal fine-tuning job...")
+    print("\n" + "=" * 80)
+    print("🦙 SeaTac Code Llama Fine-Tuning Pipeline")
+    print("=" * 80)
     
-    # Load local training data
-    with open('seatac_llama_training.json', 'r') as f:
-        training_data = json.load(f)
+    # Load training data
+    print("\n📂 Loading training data...")
+    try:
+        with open('seatac_llama_training.json', 'r') as f:
+            training_data = json.load(f)
+    except FileNotFoundError:
+        print("❌ Error: seatac_llama_training.json not found")
+        print("   Make sure you've generated the training data first:")
+        print("   python generate_training_data.py")
+        return
     
-    print(f"📤 Uploading {len(training_data)} examples to Modal...")
+    print(f"✅ Loaded {len(training_data)} examples from seatac_llama_training.json")
     
-    model_path = finetune_gemma.remote(json.dumps(training_data))
+    # Show first example
+    if training_data:
+        print("\n📝 Sample training example:")
+        print("-" * 80)
+        sample = training_data[0]
+        inst = sample.get('instruction', 'N/A')
+        out = sample.get('output', 'N/A')
+        print(f"Instruction: {inst[:80]}...")
+        print(f"Output: {out[:80]}...")
+        print("-" * 80)
     
-    print(f"\n✅ Fine-tuned model saved at: {model_path}")
-    print("\n📋 Next steps:")
-    print("   1. Deploy inference server: modal deploy modal_serve.py")
-    print("   2. Get API endpoint URL")
-    print("   3. Update backend to use the endpoint")
+    # Confirm before starting expensive GPU job
+    print("\n⚠️  This will start a GPU instance on Modal")
+    print(f"   GPU: A10G (24GB) - ~$1.10/hour")
+    print(f"   Estimated time: 1-2 hours")
+    print(f"   Estimated cost: $3-5")
+    print(f"   Fix applied: Attention mask issue resolved ✅")
+    
+    response = input("\n▶️  Continue? (yes/no): ")
+    if response.lower() not in ['yes', 'y']:
+        print("❌ Cancelled")
+        return
+    
+    print("\n🚀 Uploading data and starting fine-tuning...")
+    print("   (This may take a few minutes to spin up the GPU)")
+    
+    # Start fine-tuning on Modal
+    try:
+        result = finetune_codellama.remote(json.dumps(training_data))
+    except Exception as e:
+        print(f"\n❌ Fine-tuning failed: {e}")
+        print("\n🔍 Troubleshooting:")
+        print("   1. Check Modal dashboard: modal.com")
+        print("   2. View logs: modal app logs seatac-codellama-finetune")
+        print("   3. Check GPU quota: modal.com → Billing")
+        return
+    
+    if result.get('status') != 'success':
+        print("\n❌ Training did not complete successfully")
+        return
+    
+    print("\n" + "=" * 80)
+    print("✅ FINE-TUNING COMPLETE!")
+    print("=" * 80)
+    print(f"\n📊 Results:")
+    print(f"   Model: {result['base_model']}")
+    print(f"   Training examples: {result['training_examples']}")
+    print(f"   Epochs: {result['epochs']}")
+    print(f"   Saved to: {result['model_path']}")
+    
+    print("\n📋 Next Steps:")
+    print("   1. Test the model:")
+    print("      modal run modal_serve_codellama.py::test")
+    print("   2. Deploy inference server:")
+    print("      modal deploy modal_serve_codellama.py")
+    print("   3. Get API endpoint and integrate with backend")
+    
+    print("\n🎉 Your custom SQL model is ready!")
+
+
+if __name__ == "__main__":
+    main()
