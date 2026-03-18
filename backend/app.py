@@ -2,17 +2,11 @@
 SeaTac Operations Intelligence - Modal Edition v7.0
 FastAPI Implementation with Fine-Tuned Code Llama
 
-SQL Generation Hierarchy:
-1. Modal fine-tuned Code Llama (PRIMARY - your custom model)
-2. OpenRouter (FALLBACK - general purpose)
-3. Pre-built SQL (GUARANTEED - hardcoded queries)
-
-Enhancements from v6.5:
-- ✅ Modal fine-tuned Code Llama integration
-- ✅ Temporal filtering (afternoon, morning, time ranges)
-- ✅ Output format classification (chart/table/text)
-- ✅ Enhanced reasoning with production-grade prompting
-- ✅ Smart 3-tier SQL generation
+Complete version with:
+- Modal fine-tuned Code Llama integration
+- Robust SQL cleaning and validation
+- 3-tier SQL generation (Modal → OpenRouter → Pre-built)
+- Temporal filtering and output format classification
 """
 
 from fastapi import FastAPI, HTTPException, Request
@@ -81,7 +75,7 @@ class ModalSQLGenerator:
     def __init__(self, endpoint: Optional[str], enabled: bool):
         self.endpoint = endpoint
         self.enabled = enabled and bool(endpoint)
-        self.timeout = 30
+        self.timeout = 180  # 3 minutes for cold starts
         
         if self.enabled:
             print(f"✅ Modal Code Llama ENABLED")
@@ -93,6 +87,152 @@ class ModalSQLGenerator:
                 print("   Will use OpenRouter fallback")
             else:
                 print("ℹ️  Modal Code Llama disabled (USE_MODAL_MODEL=false)")
+    
+    def _clean_sql(self, sql_text: str) -> str:
+        """
+        Aggressively clean SQL from LLM output.
+        Handles numbered lists, markdown, explanations, multiple queries.
+        """
+        if not sql_text:
+            return sql_text
+    
+        print("\n" + "=" * 80)
+        print("🧹 CLEANING SQL")
+        print("=" * 80)
+        print("RAW INPUT:")
+        print(sql_text[:500] + "..." if len(sql_text) > 500 else sql_text)
+        print("=" * 80)
+    
+        # Step 1: Remove markdown code blocks
+        sql_text = re.sub(r'```sql\s*', '', sql_text, flags=re.IGNORECASE)
+        sql_text = re.sub(r'```\s*', '', sql_text)
+    
+        # Step 2: Remove numbered list markers at start
+        sql_text = re.sub(r'^\s*\d+\.\s+', '', sql_text, flags=re.MULTILINE)
+    
+        # Step 3: Find ALL SELECT statements
+        lines = sql_text.split('\n')
+        select_indices = []
+    
+        for i, line in enumerate(lines):
+            stripped = line.strip().upper()
+            if stripped.startswith(('SELECT', 'WITH')):
+                select_indices.append(i)
+    
+        if not select_indices:
+            print("⚠️  No SELECT found, returning empty")
+            return ""
+    
+        # If multiple SELECT statements, only use the FIRST complete one
+        if len(select_indices) > 1:
+            print(f"⚠️  Found {len(select_indices)} SELECT statements - keeping only the first")
+    
+        # Start from first SELECT
+        sql_start_idx = select_indices[0]
+        sql_lines = lines[sql_start_idx:]
+    
+        # Step 4: Find where FIRST query ends
+        sql_end_idx = len(sql_lines)
+    
+        for i, line in enumerate(sql_lines):
+            stripped = line.strip()
+            stripped_upper = stripped.upper()
+            stripped_lower = stripped.lower()
+        
+            # Stop at next SELECT statement (query #2)
+            if i > 0 and stripped_upper.startswith(('SELECT', 'WITH')):
+                print(f"⚠️  Stopping at second SELECT on line {i}")
+                sql_end_idx = i
+                break
+        
+            # Stop at explanation markers
+            if any(marker in stripped_lower for marker in [
+                'note:',
+                'explanation:',
+                'this query',
+                'the above',
+                'assumptions:',
+                'this sql',
+                'this will',
+                'you can',
+                'to use this',
+                'replace',
+                'modify',
+                'example',
+            ]):
+                sql_end_idx = i
+                break
+        
+            # Stop at numbered list items
+            if re.match(r'^\s*\d+\.\s+[A-Z]', line):
+                sql_end_idx = i
+                break
+    
+        # Extract just the FIRST SQL query
+        sql_lines = sql_lines[:sql_end_idx]
+        sql_text = '\n'.join(sql_lines)
+    
+        # Step 5: Remove trailing semicolons and whitespace
+        sql_text = sql_text.strip()
+    
+        if sql_text.endswith(';'):
+            sql_text = sql_text[:-1].strip()
+        
+        # Step 6: Fix common column name spacing issues
+    # "aircraft type" → "f.aircraft_type"
+    # This happens when model doesn't include table prefix
+    
+    # Pattern: word1 word2 that should be word1_word2
+        common_fixes = [
+        (r'\baircraft\s+type\b', 'f.aircraft_type'),
+        (r'\bevent\s+type\b', 'event_type'),
+        (r'\bevent\s+time\b', 'event_time'),
+        (r'\bcall\s+sign\b', 'call_sign'),
+        (r'\bflight\s+count\b', 'flight_count'),
+        (r'\bweight\s+class\b', 'weight_class'),
+    ]
+    
+        for pattern, replacement in common_fixes:
+            sql_text = re.sub(pattern, replacement, sql_text, flags=re.IGNORECASE)
+    
+        # Step 7: Clean trailing comments
+        lines = sql_text.split('\n')
+        cleaned_lines = []
+    
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('--') and len(stripped) > 2:
+                comment_text = stripped[2:].strip().lower()
+                if any(word in comment_text for word in ['note', 'explanation', 'this', 'you can', 'replace']):
+                    break
+            cleaned_lines.append(line)
+    
+        sql_text = '\n'.join(cleaned_lines).strip()
+    
+        # Step 8: Ensure LIMIT clause
+        if 'LIMIT' not in sql_text.upper():
+            sql_text += ' LIMIT 100'
+    
+        # Step 9: Final validation
+        if not sql_text.strip().upper().startswith(('SELECT', 'WITH', '(SELECT')):
+            print("❌ Cleaned SQL doesn't start with SELECT!")
+            print("CLEANED OUTPUT:")
+            print(sql_text[:300])
+            return ""
+    
+        # Step 10: Double-check no duplicate SELECT (should be impossible now)
+        if sql_text.upper().count('SELECT') > 1:
+            # Keep only up to first occurrence after the initial SELECT
+            first_select_end = sql_text.upper().find('SELECT', 1)
+            if first_select_end > 0:
+                sql_text = sql_text[:first_select_end].strip()
+                print(f"⚠️  Removed duplicate SELECT statements")
+    
+        print("✅ CLEANED OUTPUT:")
+        print(sql_text[:300] + "..." if len(sql_text) > 300 else sql_text)
+        print("=" * 80 + "\n")
+    
+        return sql_text
     
     async def generate_sql(self, query: str) -> Optional[str]:
         """Generate SQL using Modal endpoint"""
@@ -121,20 +261,29 @@ class ModalSQLGenerator:
                 print(f"❌ [Modal] Error: {result['error']}")
                 return None
             
-            sql = result.get('sql', '').strip()
+            raw_sql = result.get('sql', '').strip()
             
-            if not sql:
+            if not raw_sql:
                 print("❌ [Modal] Empty SQL returned")
                 return None
             
+            print("\n" + "=" * 80)
+            print("🦙 RAW MODAL OUTPUT")
+            print("=" * 80)
+            print(raw_sql)
+            print("=" * 80)
+            
+            # Clean the SQL
+            sql = self._clean_sql(raw_sql)
+            
             # Validate SQL
-            if 'SELECT' not in sql.upper():
-                print(f"❌ [Modal] Invalid SQL (no SELECT keyword)")
+            if not sql or 'SELECT' not in sql.upper():
+                print(f"❌ [Modal] Invalid SQL after cleaning")
                 return None
             
             print(f"✅ [Modal] Generated SQL successfully")
-            print(f"   Length: {len(sql)} characters")
-            print(f"   Preview: {sql[:100]}...")
+            print(f"   Raw length: {len(raw_sql)} chars")
+            print(f"   Cleaned length: {len(sql)} chars")
             
             return sql
             
@@ -145,11 +294,188 @@ class ModalSQLGenerator:
         except requests.ConnectionError as e:
             print(f"❌ [Modal] Connection failed")
             print(f"   Is Modal inference server deployed?")
-            print(f"   Error: {e}")
             return None
         except Exception as e:
             print(f"❌ [Modal] Exception: {type(e).__name__}: {e}")
             return None
+
+
+# ============================================================================
+# SQL VALIDATOR
+# ============================================================================
+
+class SQLValidator:
+    """Validate and fix common SQL generation errors"""
+    
+    @staticmethod
+    def validate_and_fix(sql: str, query: str) -> Dict[str, Any]:
+        """Validate and fix common SQL generation errors"""
+    
+    @staticmethod
+    def validate_and_fix(sql: str, query: str) -> Dict[str, Any]:
+        """Validate SQL and attempt to fix common errors"""
+        warnings = []
+        
+        # Pre-check: SQL must not be empty
+        if not sql or not sql.strip():
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': ['❌ Empty SQL generated'],
+                'error': 'SQL generation produced empty output'
+            }
+        
+        # Pre-check: Must start with SELECT/WITH
+        sql_upper = sql.strip().upper()
+        if not sql_upper.startswith(('SELECT', 'WITH', '(SELECT')):
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': ['❌ SQL does not start with SELECT'],
+                'error': f'Invalid SQL start: {sql[:50]}...'
+            }
+        
+        # Check 0: Detect instructional text instead of SQL
+        # Look for common instruction phrases in the first line
+        first_line = sql.split('\n')[0].strip().lower()
+        instruction_keywords = [
+            'select the appropriate',
+            'choose the',
+            'based on the',
+            'use the following',
+            'according to',
+            'refer to',
+            'consider the',
+            'determine the',
+            'identify the',
+            'find the',
+        ]
+        
+        for keyword in instruction_keywords:
+            if keyword in first_line and 'from' not in first_line.lower():
+                warnings.append(f"❌ SQL contains instructional text: '{first_line[:60]}'")
+                return {
+                    'valid': False,
+                    'sql': sql,
+                    'fixed': False,
+                    'warnings': warnings,
+                    'error': 'Model generated instructions instead of SQL query'
+                }
+        
+        # Check 1: Must have FROM clause
+        if 'FROM' not in sql_upper:
+            warnings.append("❌ SQL missing FROM clause")
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': warnings,
+                'error': 'SQL must include FROM clause'
+            }
+        
+        # Check 2: Detect NOW() usage
+        if 'NOW()' in sql_upper:
+            warnings.append("❌ CRITICAL: SQL uses NOW() - incorrect for taxi time calculations!")
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': warnings,
+                'error': 'SQL uses NOW() which is incorrect for taxi time calculations'
+            }
+        
+        # Check 3: Detect numbered lists
+        if re.search(r'^\s*\d+\.\s+', sql, re.MULTILINE):
+            warnings.append("❌ SQL contains numbered list markers")
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': warnings,
+                'error': 'SQL contains numbered lists or formatting artifacts'
+            }
+        
+        # Check 4: WHERE before FROM (syntax error)
+        from_pos = sql_upper.find('FROM')
+        where_pos = sql_upper.find('WHERE')
+        if where_pos != -1 and where_pos < from_pos:
+            warnings.append("❌ WHERE clause appears before FROM clause")
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': warnings,
+                'error': 'Invalid SQL structure: WHERE before FROM'
+            }
+        
+        # Check 5: Taxi-in validation
+        if 'taxi' in query.lower() and 'in' in query.lower():
+            has_landing = 'Actual_Landing' in sql
+            has_inblock = 'Actual_In_Block' in sql
+            
+            if not (has_landing and has_inblock):
+                warnings.append("❌ Taxi-in query missing proper events")
+                return {
+                    'valid': False,
+                    'sql': sql,
+                    'fixed': False,
+                    'warnings': warnings,
+                    'error': 'Taxi-in calculation must use Actual_Landing and Actual_In_Block events'
+                }
+        
+        # Check 6: Taxi-out validation
+        if 'taxi' in query.lower() and 'out' in query.lower():
+            has_offblock = 'Actual_Off_Block' in sql
+            has_takeoff = 'Actual_Take_Off' in sql
+            
+            if not (has_offblock and has_takeoff):
+                warnings.append("❌ Taxi-out query missing proper events")
+                return {
+                    'valid': False,
+                    'sql': sql,
+                    'fixed': False,
+                    'warnings': warnings,
+                    'error': 'Taxi-out calculation must use Actual_Off_Block and Actual_Take_Off events'
+                }
+        
+        # Check 7: Dangerous operations
+        dangerous = ['DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE', 'INSERT', 'UPDATE']
+        for op in dangerous:
+            if op in sql_upper.split():
+                warnings.append(f"❌ Dangerous operation detected: {op}")
+                return {
+                    'valid': False,
+                    'sql': sql,
+                    'fixed': False,
+                    'warnings': warnings,
+                    'error': f'Dangerous SQL operation not allowed: {op}'
+                }
+        
+        # Check 8: Basic structure validation
+        # SQL should have reasonable structure
+        has_select = 'SELECT' in sql_upper
+        has_from = 'FROM' in sql_upper
+        
+        if not (has_select and has_from):
+            warnings.append("❌ SQL missing basic structure (SELECT...FROM)")
+            return {
+                'valid': False,
+                'sql': sql,
+                'fixed': False,
+                'warnings': warnings,
+                'error': 'SQL must have SELECT...FROM structure'
+            }
+        
+        # All checks passed
+        warnings.append('✅ SQL validation passed')
+        return {
+            'valid': True,
+            'sql': sql,
+            'fixed': False,
+            'warnings': warnings
+        }
 
 
 # ============================================================================
@@ -231,45 +557,90 @@ class TemporalContextExtractor:
     def inject_temporal_filter(self, sql_query: str, user_query: str) -> str:
         """Inject temporal WHERE clauses into existing SQL"""
         temporal_context = self.extract_temporal_context(user_query)
-        
+    
         if not temporal_context['has_temporal_filter']:
             return sql_query
-        
-        # Generate WHERE clause components
+    
+        # Check if SQL already has time filtering (avoid duplicate)
+        sql_upper = sql_query.upper()
+        sql_lower = sql_query.lower()
+    
+        if 'TIME(' in sql_upper or 'BETWEEN' in sql_upper and ("'14:" in sql_query or "'17:" in sql_query):
+            print("⏭️  SQL already has time filtering, skipping temporal injection")
+            return sql_query
+    
+        # CRITICAL: Check if event_time column exists in this query
+        # Don't inject temporal filters on queries that don't use flight_event table
+        if 'event_time' not in sql_lower:
+            print("⏭️  Query doesn't use event_time column, skipping temporal injection")
+            return sql_query
+    
+        # Detect which time column/alias to use based on what's in the query
+        time_column = None
+    
+        # Check for common alias patterns
+        if 'offblock.event_time' in sql_lower:
+            time_column = 'offblock.event_time'
+        elif 'landing.event_time' in sql_lower:
+            time_column = 'landing.event_time'
+        elif 'takeoff.event_time' in sql_lower:
+            time_column = 'takeoff.event_time'
+        elif 'inblock.event_time' in sql_lower:
+            time_column = 'inblock.event_time'
+        elif 'le.event_time' in sql_lower:
+            time_column = 'le.event_time'
+        elif 'ib.event_time' in sql_lower:
+            time_column = 'ib.event_time'
+        elif 'fe.event_time' in sql_lower:
+            time_column = 'fe.event_time'
+        elif 'flight_event' in sql_lower and 'event_time' in sql_lower:
+        # Query uses flight_event table but no specific alias
+        # Try to find what alias is used for flight_event
+        # Look for patterns like "JOIN flight_event X ON" or "FROM flight_event X"
+            import re
+            alias_match = re.search(r'flight_event\s+(\w+)\s+ON', sql_lower)
+            if alias_match:
+                alias = alias_match.group(1)
+                time_column = f'{alias}.event_time'
+            else:
+                time_column = 'event_time'
+        else:
+            print("⚠️  No usable event_time column found in query, skipping temporal filter")
+            return sql_query
+    
         clauses = []
-        
+    
         if temporal_context.get('specific_hours'):
             hours = temporal_context['specific_hours']
             if len(hours) == 1:
-                clauses.append(f"HOUR(offblock.event_time) = {hours[0]}")
+                clauses.append(f"HOUR({time_column}) = {hours[0]}")
             else:
                 hour_list = ', '.join(map(str, hours))
-                clauses.append(f"HOUR(offblock.event_time) IN ({hour_list})")
-        
+                clauses.append(f"HOUR({time_column}) IN ({hour_list})")
+    
         elif temporal_context.get('hour_range'):
             hour_range = temporal_context['hour_range']
             if isinstance(hour_range, list):
                 range_clauses = []
                 for start, end in hour_range:
                     if start <= end:
-                        range_clauses.append(f"(HOUR(offblock.event_time) BETWEEN {start} AND {end})")
+                        range_clauses.append(f"(HOUR({time_column}) BETWEEN {start} AND {end})")
                     else:
-                        range_clauses.append(f"(HOUR(offblock.event_time) >= {start} OR HOUR(offblock.event_time) <= {end})")
+                        range_clauses.append(f"(HOUR({time_column}) >= {start} OR HOUR({time_column}) <= {end})")
                 clauses.append(f"({' OR '.join(range_clauses)})")
             else:
                 start, end = hour_range
                 if start <= end:
-                    clauses.append(f"HOUR(offblock.event_time) BETWEEN {start} AND {end}")
+                    clauses.append(f"HOUR({time_column}) BETWEEN {start} AND {end}")
                 else:
-                    clauses.append(f"(HOUR(offblock.event_time) >= {start} OR HOUR(offblock.event_time) <= {end})")
-        
+                    clauses.append(f"(HOUR({time_column}) >= {start} OR HOUR({time_column}) <= {end})")
+    
         if not clauses:
             return sql_query
-        
+    
         where_clause = ' AND '.join(clauses)
-        sql_upper = sql_query.upper()
-        
-        # Inject into SQL
+    
+        # Find WHERE clause position
         if 'WHERE' in sql_upper:
             where_pos = sql_upper.find('WHERE') + 5
             next_clause_pos = len(sql_query)
@@ -277,17 +648,21 @@ class TemporalContextExtractor:
                 pos = sql_upper.find(clause, where_pos)
                 if pos != -1 and pos < next_clause_pos:
                     next_clause_pos = pos
-            
+        
             before = sql_query[:next_clause_pos].rstrip()
             after = sql_query[next_clause_pos:]
+        
+            print(f"✅ Injecting temporal filter: {where_clause}")
             return f"{before}\n     AND {where_clause}{after}"
         else:
             group_by_pos = sql_upper.find('GROUP BY')
             if group_by_pos != -1:
                 before = sql_query[:group_by_pos].rstrip()
                 after = sql_query[group_by_pos:]
+                print(f"✅ Injecting temporal filter: {where_clause}")
                 return f"{before}\nWHERE {where_clause}\n{after}"
-            
+        
+            print(f"✅ Injecting temporal filter: {where_clause}")
             return f"{sql_query.rstrip()}\nWHERE {where_clause}"
 
 
@@ -404,6 +779,7 @@ Taxi-out: TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)
 Taxi-in: TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)
 
 ALWAYS filter: BETWEEN 1 AND 120
+NEVER use NOW() - always calculate between actual event times
 """
 
 
@@ -482,7 +858,7 @@ class QueryResponse(BaseModel):
     chart: Optional[Dict[str, Any]] = None
     output_format: Optional[str] = None
     output_confidence: Optional[float] = None
-    sql_source: Optional[str] = None  # 'modal', 'openrouter', or 'prebuilt'
+    sql_source: Optional[str] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -519,6 +895,13 @@ class DatabaseManager:
             return False
     
     def execute_query(self, sql: str) -> Dict[str, Any]:
+        # LOG THE FULL SQL BEFORE EXECUTION
+        print("\n" + "=" * 80)
+        print("📋 EXECUTING SQL QUERY")
+        print("=" * 80)
+        print(sql)
+        print("=" * 80 + "\n")
+        
         try:
             connection = mysql.connector.connect(**self.db_config)
             cursor = connection.cursor(dictionary=True)
@@ -527,7 +910,7 @@ class DatabaseManager:
             cursor.close()
             connection.close()
             
-            # Convert Decimal, datetime, date, and other non-serializable types
+            # Convert Decimal, datetime, date
             cleaned_results = []
             for row in results:
                 cleaned_row = {}
@@ -541,13 +924,14 @@ class DatabaseManager:
                     elif value is None:
                         cleaned_row[key] = None
                     else:
-                        # Try to serialize, convert to string if fails
                         try:
                             json.dumps(value)
                             cleaned_row[key] = value
                         except (TypeError, ValueError):
                             cleaned_row[key] = str(value)
                 cleaned_results.append(cleaned_row)
+            
+            print(f"✅ Query executed successfully: {len(cleaned_results)} rows returned\n")
             
             return {
                 'success': True,
@@ -556,6 +940,8 @@ class DatabaseManager:
                 'sql': sql
             }
         except Error as e:
+            print(f"❌ SQL EXECUTION FAILED")
+            print(f"Error: {str(e)}\n")
             return {
                 'success': False,
                 'error': str(e),
@@ -693,6 +1079,7 @@ class SeaTacAgent:
         self.temporal_extractor = TemporalContextExtractor()
         self.format_classifier = OutputFormatClassifier()
         self.response_controller = EnhancedResponseController(self.format_classifier, self.chart_generator)
+        self.sql_validator = SQLValidator()
         
         # Pre-built use cases (fallback)
         self.use_cases = {
@@ -744,35 +1131,201 @@ class SeaTacAgent:
             }
         }
     
-    async def generate_sql(self, query: str) -> Dict[str, Any]:
+    def _clean_sql(self, sql_text: str) -> str:
         """
-        Generate SQL with 3-tier hierarchy:
-        1. Modal fine-tuned Code Llama (BEST)
-        2. OpenRouter (GOOD) 
-        3. Pre-built SQL (GUARANTEED)
+        Aggressively clean SQL from LLM output.
+        Handles numbered lists, markdown, explanations, multiple queries.
         """
+        if not sql_text:
+            return sql_text
+    
+        print("\n" + "=" * 80)
+        print("🧹 CLEANING SQL")
+        print("=" * 80)
+        print("RAW INPUT:")
+        print(sql_text[:500] + "..." if len(sql_text) > 500 else sql_text)
+        print("=" * 80)
+    
+        # Step 1: Remove markdown code blocks
+        sql_text = re.sub(r'```sql\s*', '', sql_text, flags=re.IGNORECASE)
+        sql_text = re.sub(r'```\s*', '', sql_text)
+    
+        # Step 2: Remove numbered list markers at start
+        sql_text = re.sub(r'^\s*\d+\.\s+', '', sql_text, flags=re.MULTILINE)
+    
+        # Step 3: Find ALL SELECT statements
+        lines = sql_text.split('\n')
+        select_indices = []
+    
+        for i, line in enumerate(lines):
+            stripped = line.strip().upper()
+            if stripped.startswith(('SELECT', 'WITH')):
+                select_indices.append(i)
+    
+        if not select_indices:
+            print("⚠️  No SELECT found, returning empty")
+            return ""
+    
+        # If multiple SELECT statements, only use the FIRST complete one
+        if len(select_indices) > 1:
+            print(f"⚠️  Found {len(select_indices)} SELECT statements - keeping only the first")
+    
+        # Start from first SELECT
+        sql_start_idx = select_indices[0]
+        sql_lines = lines[sql_start_idx:]
+    
+        # Step 4: Find where FIRST query ends
+        sql_end_idx = len(sql_lines)
+    
+        for i, line in enumerate(sql_lines):
+            stripped = line.strip()
+            stripped_upper = stripped.upper()
+            stripped_lower = stripped.lower()
         
-        # TIER 1: Try Modal fine-tuned Code Llama
+            # Stop at next SELECT statement (query #2)
+            if i > 0 and stripped_upper.startswith(('SELECT', 'WITH')):
+                print(f"⚠️  Stopping at second SELECT on line {i}")
+                sql_end_idx = i
+                break
+        
+            # Stop at explanation markers
+            if any(marker in stripped_lower for marker in [
+                'note:',
+                'explanation:',
+                'this query',
+                'the above',
+                'assumptions:',
+                'this sql',
+                'this will',
+                'you can',
+                'to use this',
+                'replace',
+                'modify',
+                'example',
+            ]):
+                sql_end_idx = i
+                break
+        
+            # Stop at numbered list items
+            if re.match(r'^\s*\d+\.\s+[A-Z]', line):
+                sql_end_idx = i
+                break
+    
+        # Extract just the FIRST SQL query
+        sql_lines = sql_lines[:sql_end_idx]
+        sql_text = '\n'.join(sql_lines)
+
+        # Step 5: Fix common column name spacing issues
+    # "aircraft type" → "f.aircraft_type"
+    # This happens when model doesn't include table prefix
+    
+    # Pattern: word1 word2 that should be word1_word2
+        common_fixes = [
+        (r'\baircraft\s+type\b', 'f.aircraft_type'),
+        (r'\bevent\s+type\b', 'event_type'),
+        (r'\bevent\s+time\b', 'event_time'),
+        (r'\bcall\s+sign\b', 'call_sign'),
+        (r'\bflight\s+count\b', 'flight_count'),
+        (r'\bweight\s+class\b', 'weight_class'),
+    ]
+    
+        for pattern, replacement in common_fixes:
+            sql_text = re.sub(pattern, replacement, sql_text, flags=re.IGNORECASE)
+    
+        # Step 6: Remove trailing semicolons and whitespace
+        sql_text = sql_text.strip()
+    
+        if sql_text.endswith(';'):
+            sql_text = sql_text[:-1].strip()
+    
+        # Step 7: Clean trailing comments
+        lines = sql_text.split('\n')
+        cleaned_lines = []
+    
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith('--') and len(stripped) > 2:
+                comment_text = stripped[2:].strip().lower()
+                if any(word in comment_text for word in ['note', 'explanation', 'this', 'you can', 'replace']):
+                    break
+            cleaned_lines.append(line)
+    
+        sql_text = '\n'.join(cleaned_lines).strip()
+    
+        # Step 8: Ensure LIMIT clause
+        if 'LIMIT' not in sql_text.upper():
+            sql_text += ' LIMIT 100'
+    
+        # Step 9: Final validation
+        if not sql_text.strip().upper().startswith(('SELECT', 'WITH', '(SELECT')):
+            print("❌ Cleaned SQL doesn't start with SELECT!")
+            print("CLEANED OUTPUT:")
+            print(sql_text[:300])
+            return ""
+    
+        # Step 10: Double-check no duplicate SELECT (should be impossible now)
+        if sql_text.upper().count('SELECT') > 1:
+            # Keep only up to first occurrence after the initial SELECT
+            first_select_end = sql_text.upper().find('SELECT', 1)
+            if first_select_end > 0:
+                sql_text = sql_text[:first_select_end].strip()
+                print(f"⚠️  Removed duplicate SELECT statements")
+    
+        print("✅ CLEANED OUTPUT:")
+        print(sql_text[:300] + "..." if len(sql_text) > 300 else sql_text)
+        print("=" * 80 + "\n")
+    
+        return sql_text
+    
+    async def generate_sql(self, query: str) -> Dict[str, Any]:
+        """Generate SQL with 3-tier hierarchy + validation"""
+        
+        print("\n" + "=" * 80)
+        print("🔍 SQL GENERATION PROCESS")
+        print("=" * 80)
+        print(f"Query: {query}")
+        print("=" * 80 + "\n")
+        
+        # TIER 1: Try Modal
         if self.modal_gen.enabled:
+            print("📍 TIER 1: Trying Modal fine-tuned Code Llama...")
             modal_sql = await self.modal_gen.generate_sql(query)
             if modal_sql:
-                print(f"✅ [SQL] Using Modal fine-tuned Code Llama")
-                return {
-                    'success': True,
-                    'sql': modal_sql,
-                    'source': 'modal'
-                }
-            else:
-                print(f"⚠️  [SQL] Modal failed, trying OpenRouter...")
+                # VALIDATE
+                validation = self.sql_validator.validate_and_fix(modal_sql, query)
+                
+                print("\n" + "=" * 80)
+                print("🔍 SQL VALIDATION")
+                print("=" * 80)
+                for warning in validation['warnings']:
+                    print(warning)
+                print("=" * 80 + "\n")
+                
+                if validation['valid']:
+                    print(f"✅ [TIER 1] Using Modal fine-tuned Code Llama\n")
+                    return {
+                        'success': True,
+                        'sql': validation['sql'],
+                        'source': 'modal'
+                    }
+                else:
+                    print(f"❌ [TIER 1] Modal SQL failed validation: {validation.get('error')}")
+                    print(f"⚠️  Falling back to TIER 2...\n")
         
         # TIER 2: Try OpenRouter
         if self.llm:
             try:
-                print(f"🌐 [SQL] Using OpenRouter ({OPENROUTER_MODEL})...")
+                print("📍 TIER 2: Trying OpenRouter...")
                 
                 sql_prompt = f"""{DETAILED_SCHEMA}
 
 Generate SQL for: "{query}"
+
+CRITICAL RULES:
+- NEVER use NOW() - always calculate between actual event times
+- For taxi-in: TIMESTAMPDIFF(MINUTE, landing.event_time, inblock.event_time)
+- For taxi-out: TIMESTAMPDIFF(MINUTE, offblock.event_time, takeoff.event_time)
+- Always filter: BETWEEN 1 AND 120 minutes
 
 Return ONLY the SQL query, no explanations.
 """
@@ -784,20 +1337,33 @@ Return ONLY the SQL query, no explanations.
                 
                 sql = self._clean_sql(response.content)
                 
-                if sql and 'SELECT' in sql.upper():
-                    print(f"✅ [SQL] OpenRouter generated SQL")
+                # VALIDATE
+                validation = self.sql_validator.validate_and_fix(sql, query)
+                
+                print("\n" + "=" * 80)
+                print("🔍 SQL VALIDATION")
+                print("=" * 80)
+                for warning in validation['warnings']:
+                    print(warning)
+                print("=" * 80 + "\n")
+                
+                if validation['valid'] and 'SELECT' in sql.upper():
+                    print(f"✅ [TIER 2] Using OpenRouter\n")
                     return {
                         'success': True,
-                        'sql': sql,
+                        'sql': validation['sql'],
                         'source': 'openrouter'
                     }
+                else:
+                    print(f"❌ [TIER 2] OpenRouter SQL failed validation")
                 
             except Exception as e:
-                print(f"❌ [SQL] OpenRouter error: {e}")
+                print(f"❌ [TIER 2] OpenRouter error: {e}\n")
         
-        # TIER 3: Pre-built SQL (guaranteed fallback)
-        print(f"📄 [SQL] Using pre-built SQL (fallback)")
+        # TIER 3: Pre-built SQL
+        print("📍 TIER 3: Using pre-built SQL (fallback)")
         prebuilt = self._get_prebuilt_sql(query)
+        print(f"✅ [TIER 3] Using pre-built SQL\n")
         return {
             'success': True,
             'sql': prebuilt,
@@ -812,19 +1378,7 @@ Return ONLY the SQL query, no explanations.
             if any(kw in query_lower for kw in use_case['keywords']):
                 return use_case['sql'].strip()
         
-        # Default fallback
         return "SELECT * FROM flight LIMIT 10"
-    
-    def _clean_sql(self, sql_text: str) -> str:
-        """Clean SQL from LLM"""
-        sql_text = re.sub(r'```sql\s*', '', sql_text, flags=re.IGNORECASE)
-        sql_text = re.sub(r'```\s*', '', sql_text)
-        sql_text = sql_text.strip()
-        
-        if 'LIMIT' not in sql_text.upper():
-            sql_text += ' LIMIT 100'
-        
-        return sql_text
     
     async def process_query(self, query: str) -> Dict[str, Any]:
         """Process query with all enhancements"""
@@ -835,7 +1389,7 @@ Return ONLY the SQL query, no explanations.
             print(f"📥 Query: {query}")
             print(f"{'='*80}")
             
-            # Generate SQL (Modal → OpenRouter → Pre-built)
+            # Generate SQL
             sql_result = await self.generate_sql(query)
             sql_query = sql_result['sql']
             sql_source = sql_result['source']
@@ -947,7 +1501,6 @@ Return ONLY the SQL query, no explanations.
                     pass
         
         if not self.llm:
-            # Fallback if no LLM
             return f"Found {len(data)} results."
         
         insights_prompt = f"""Analyze this airport operations data and provide 2-3 sentences with specific numbers.
@@ -1052,24 +1605,19 @@ async def startup_event():
     print("=" * 80)
     print(f"Version: 7.0.0")
     
-    # Modal status
     if modal_generator.enabled:
         print(f"🦙 Modal Code Llama: ENABLED ✅")
         print(f"   Endpoint: {MODAL_ENDPOINT}")
         print(f"   Status: Your fine-tuned model (PRIMARY)")
     else:
         print(f"🦙 Modal Code Llama: DISABLED")
-        if USE_MODAL_MODEL and not MODAL_ENDPOINT:
-            print(f"   ⚠️  Enable by setting MODAL_ENDPOINT in .env")
     
-    # OpenRouter status
     if llm:
         print(f"🌐 OpenRouter: Configured ✅ (FALLBACK)")
         print(f"   Model: {OPENROUTER_MODEL}")
     else:
         print(f"🌐 OpenRouter: Not configured")
     
-    # Database status
     print(f"🗄️  Database: {db_manager.db_config['database']}@{db_manager.db_config['host']}")
     if db_manager.test_connection():
         print(f"   Status: Connected ✅")
@@ -1081,12 +1629,12 @@ async def startup_event():
     print("   2️⃣  OpenRouter (general purpose)")
     print("   3️⃣  Pre-built SQL (guaranteed fallback)")
     
-    print("\n✨ Enhancements v7.0:")
+    print("\n✨ Features v7.0:")
     print("   ✓ Modal fine-tuned Code Llama integration")
+    print("   ✓ Robust SQL cleaning and validation")
     print("   ✓ Temporal filtering (afternoon, morning, time ranges)")
     print("   ✓ Output format classification (chart/table/text)")
     print("   ✓ Smart 3-tier SQL generation")
-    print("   ✓ Enhanced reasoning and insights")
     
     print("\n🚀 Server starting on http://0.0.0.0:8000")
     print("=" * 80 + "\n")
