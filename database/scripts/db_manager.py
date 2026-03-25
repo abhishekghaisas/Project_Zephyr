@@ -43,7 +43,41 @@ class DatabaseManager:
         print("✓ Database imported")
     
     def import_excel(self):
-        df = pd.read_excel(EXCEL_FILE)
+        # df = pd.read_excel(EXCEL_FILE)
+        flights_df = pd.read_excel(EXCEL_FILE, sheet_name='flights')
+        assignments_df = pd.read_excel(EXCEL_FILE, sheet_name='assignments', header=2)
+    
+        cand = flights_df.merge(
+            assignments_df,
+            left_on='Flight ID',
+            right_on='Call Sign (VDGS)',
+            how='left'
+        )
+    
+        cand['inblock_diff'] = (
+            pd.to_datetime(cand['Actual In Block Time (VDGS) (US Pacific)'], errors='coerce') -
+            pd.to_datetime(cand['Actual In Block Time (Aerobahn) (US Pacific)'], errors='coerce')
+        ).abs()
+    
+        cand['offblock_diff'] = (
+            pd.to_datetime(cand['Actual Off Block Time (VDGS) (US Pacific)'], errors='coerce') -
+            pd.to_datetime(cand['Actual Off Block Time (Aerobahn) (US Pacific)'], errors='coerce')
+        ).abs()
+    
+        cand['match_diff'] = cand['inblock_diff'].combine_first(cand['offblock_diff'])
+    
+        cand = cand.reset_index(drop=True)
+        cand['merge_row_id'] = cand.index
+    
+
+        best = cand.sort_values('match_diff', na_position='last').drop_duplicates(
+            subset=['Call Sign', 'Flight ID', 'Actual Off Block Time (Aerobahn) (US Pacific)', 'Actual In Block Time (Aerobahn) (US Pacific)'],
+            keep='first'
+        )
+    
+        df = best
+
+        
         conn = self.connect()
         
         with conn.cursor() as cursor:
@@ -110,10 +144,17 @@ class DatabaseManager:
     def _import_events(self, conn, df):
         df = df.where(pd.notna(df), None)
         event_mappings = [
+            # Gate / Runway 
             ('Actual Off Block Time (Aerobahn) (US Pacific)', 'Actual_Off_Block', 'Gate'),
             ('Actual Take Off Time (Aerobahn) (US Pacific)', 'Actual_Take_Off', 'Runway'),
             ('Actual Landing Time (Aerobahn) (US Pacific)', 'Actual_Landing', 'Runway'),
             ('Actual In Block Time (Aerobahn) (US Pacific)', 'Actual_In_Block', 'Gate'),
+        
+            # Ramp
+            ('North Ramp  Enter Time (US Pacific)', 'North_Ramp_Enter', 'North_Ramp'),
+            ('North Ramp  Exit Time (US Pacific)', 'North_Ramp_Exit', 'North_Ramp'),
+            ('South Ramp  Enter Time (US Pacific)', 'South_Ramp_Enter', 'South_Ramp'),
+            ('South Ramp  Exit Time (US Pacific)', 'South_Ramp_Exit', 'South_Ramp'),
         ]
         
         with conn.cursor() as cursor:
@@ -123,7 +164,8 @@ class DatabaseManager:
                     continue
                     
                 for time_col, event_type, loc_type in event_mappings:
-                    if pd.notna(row.get(time_col)):
+                    # if pd.notna(row.get(time_col)):
+                    if time_col in df.columns and pd.notna(row.get(time_col)):
                         location = self._get_location(row, loc_type)
                         cursor.execute("""
                             INSERT INTO flight_event 
@@ -136,6 +178,10 @@ class DatabaseManager:
             return row.get('Gate Assigned (Aerobahn)')
         elif loc_type == 'Runway':
             return row.get('Runway Assigned (Aerobahn)')
+        elif loc_type == 'North_Ramp':
+            return 'North Ramp'
+        elif loc_type == 'South_Ramp':
+            return 'South Ramp'
         return None
     
     def verify(self):
