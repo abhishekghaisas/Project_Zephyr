@@ -35,7 +35,7 @@ interface DataTableProps {
 
 type SortDirection = 'asc' | 'desc' | null;
 
-export function DataTable({ 
+export function DataTableWithExport({ 
   data, 
   columns: providedColumns,
   title,
