@@ -14,8 +14,8 @@ interface Message {
   content: string;
   role: 'user' | 'assistant';
   timestamp: Date;
-  chart?: any; // Chart configuration from backend
-  data?: any[]; // Raw data from backend
+  chart?: any;
+  data?: any[];
 }
 
 interface ChatMessageProps {
@@ -38,6 +38,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
       hour12: true 
     });
   };
+
+  console.log('🎨 ChatMessage rendering:', message);
 
   return (
     <div className={cn(
@@ -69,12 +71,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           </span>
         </div>
         
-        {/* <div className="prose prose-sm max-w-none">
-          <div className="text-gray-800 whitespace-pre-wrap leading-relaxed">
-            {message.content}
-          </div>
-        </div> */}
-        {/* support markdown rendering */}
+        {/* Markdown content */}
         <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {message.content}
