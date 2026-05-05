@@ -3,6 +3,7 @@ import { Button } from './ui/button';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Copy, Check, Download, Search } from 'lucide-react';
 import { cn } from './ui/utils';
+import { DataTableWithExport } from './DataTableWithExport';
 
 import ChartVisualization from './ChartVisualization';
 
