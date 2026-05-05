@@ -45,7 +45,7 @@ export default function App() {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  // Check if already logged in
+  // Check if already logged in on mount
   useEffect(() => {
     const savedUser = localStorage.getItem('aiport_user');
     if (savedUser) {
@@ -53,6 +53,71 @@ export default function App() {
       setIsLoggedIn(true);
     }
   }, []);
+
+  // Computed values
+  const activeThread = threads.find(t => t.id === activeChat) || null;
+  const messages = activeThread ? activeThread.messages.map(m => ({
+    ...m,
+    timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp) : m.timestamp
+  })) : [];
+  const isWelcomeView = messages.length === 0;
+
+  // API call
+  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; data?: any[] }> => {
+    const res = await queryAPI(userMessage);
+    return {
+      answer: res.answer,
+      chart: res.chart,
+      data: res.tableData
+    }; 
+  };
+
+  // Auto-scroll effect
+  useEffect(() => {
+    const t = setTimeout(() => {
+      try {
+        const root = scrollAreaRef.current as HTMLElement | null;
+        if (!root) return;
+        const viewport = root.querySelector('[data-slot="scroll-area-viewport"]');
+        if (viewport) {
+          (viewport as HTMLElement).scrollTo({ top: (viewport as HTMLElement).scrollHeight, behavior: 'smooth' });
+        } else {
+          bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+      } catch (err) {}
+    }, 50);
+    return () => clearTimeout(t);
+  }, [messages]);
+
+  // Load threads from localStorage
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed: ChatThread[] = JSON.parse(raw);
+        const hydrated = parsed.map(t => ({
+          ...t,
+          lastUpdated: t.lastUpdated ? new Date(t.lastUpdated).toString() : new Date().toString(),
+          messages: (t.messages || []).map(m => ({
+            ...m,
+            timestamp: m.timestamp ? new Date(m.timestamp).toString() : new Date().toString()
+          }))
+        }));
+        setThreads(hydrated);
+      }
+    } catch (err) {
+      console.error('Failed to load chat threads', err);
+    }
+  }, []);
+
+  // Save threads to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
+    } catch (err) {
+      console.error('Failed to save chat threads', err);
+    }
+  }, [threads]);
 
   // Login handler
   const handleLogin = (e: React.FormEvent) => {
@@ -76,132 +141,6 @@ export default function App() {
     setUsername('');
     setPassword('');
   };
-
-  // Show login page
-  if (!isLoggedIn) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 p-4">
-        <Card className="w-full max-w-md shadow-lg">
-          <CardHeader className="space-y-3 text-center pb-6">
-            <div className="mx-auto bg-gradient-to-br from-blue-500 to-green-500 p-3 rounded-2xl w-fit">
-              <Plane className="h-8 w-8 text-white" />
-            </div>
-            <CardTitle className="text-2xl font-bold">AIport</CardTitle>
-            <CardDescription className="text-base">
-              AI-Powered Airport Operations Intelligence
-            </CardDescription>
-          </CardHeader>
-          
-          <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
-              {loginError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-                  {loginError}
-                </div>
-              )}
-              
-              <div className="space-y-2">
-                <label htmlFor="username" className="text-sm font-medium block">Username</label>
-                <Input
-                  id="username"
-                  type="text"
-                  placeholder="Enter your username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                  className="h-11"
-                />
-              </div>
-              
-              <div className="space-y-2">
-                <label htmlFor="password" className="text-sm font-medium block">Password</label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  className="h-11"
-                />
-              </div>
-              
-              <Button type="submit" className="w-full h-11 text-base font-medium">
-                Sign In
-              </Button>
-            </form>
-
-            <div className="mt-6 pt-6 border-t border-gray-200">
-              <p className="text-xs text-center text-gray-500">
-                Demo Credentials:<br />
-                <span className="font-mono font-medium">admin / admin123</span>
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Chat logic
-  const activeThread = threads.find(t => t.id === activeChat) || null;
-  const messages = activeThread ? activeThread.messages.map(m => ({
-    ...m,
-    timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp) : m.timestamp
-  })) : [];
-
-  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; data?: any[] }> => {
-    const res = await queryAPI(userMessage);
-    return {
-      answer: res.answer,
-      chart: res.chart,
-      data: res.tableData
-    }; 
-  };
-
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        const root = scrollAreaRef.current as HTMLElement | null;
-        if (!root) return;
-        const viewport = root.querySelector('[data-slot="scroll-area-viewport"]');
-        if (viewport) {
-          (viewport as HTMLElement).scrollTo({ top: (viewport as HTMLElement).scrollHeight, behavior: 'smooth' });
-        } else {
-          bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }
-      } catch (err) {}
-    }, 50);
-    return () => clearTimeout(t);
-  }, [messages]);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed: ChatThread[] = JSON.parse(raw);
-        const hydrated = parsed.map(t => ({
-          ...t,
-          lastUpdated: t.lastUpdated ? new Date(t.lastUpdated).toString() : new Date().toString(),
-          messages: (t.messages || []).map(m => ({
-            ...m,
-            timestamp: m.timestamp ? new Date(m.timestamp).toString() : new Date().toString()
-          }))
-        }));
-        setThreads(hydrated);
-      }
-    } catch (err) {
-      console.error('Failed to load chat threads', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
-    } catch (err) {
-      console.error('Failed to save chat threads', err);
-    }
-  }, [threads]);
 
   const handleSendMessage = async (content: string) => {
     let currentChatId = activeChat;
@@ -309,8 +248,73 @@ export default function App() {
     });
   };
 
-  const isWelcomeView = messages.length === 0;
+  // Show login page if not logged in
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 p-4">
+        <Card className="w-full max-w-md shadow-lg">
+          <CardHeader className="space-y-3 text-center pb-6">
+            <div className="mx-auto bg-gradient-to-br from-blue-500 to-green-500 p-3 rounded-2xl w-fit">
+              <Plane className="h-8 w-8 text-white" />
+            </div>
+            <CardTitle className="text-2xl font-bold">AIport</CardTitle>
+            <CardDescription className="text-base">
+              AI-Powered Airport Operations Intelligence
+            </CardDescription>
+          </CardHeader>
+          
+          <CardContent>
+            <form onSubmit={handleLogin} className="space-y-4">
+              {loginError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  {loginError}
+                </div>
+              )}
+              
+              <div className="space-y-2">
+                <label htmlFor="username" className="text-sm font-medium block">Username</label>
+                <Input
+                  id="username"
+                  type="text"
+                  placeholder="Enter your username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  className="h-11"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <label htmlFor="password" className="text-sm font-medium block">Password</label>
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Enter your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="h-11"
+                />
+              </div>
+              
+              <Button type="submit" className="w-full h-11 text-base font-medium">
+                Sign In
+              </Button>
+            </form>
 
+            <div className="mt-6 pt-6 border-t border-gray-200">
+              <p className="text-xs text-center text-gray-500">
+                Demo Credentials:<br />
+                <span className="font-mono font-medium">admin / admin123</span>
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Main app view (after login)
   return (
     <div className="flex h-screen overflow-hidden bg-white">
       <ChatSidebar
