@@ -29,13 +29,14 @@ interface ChatThread {
 const STORAGE_KEY = 'gate_chat_threads_v1';
 
 export default function App() {
-  // Simple login state
+  // Login state
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [currentUser, setCurrentUser] = useState('');
 
+  // Chat state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [pendingThread, setPendingThread] = useState<ChatThread | null>(null);
@@ -53,19 +54,18 @@ export default function App() {
     }
   }, []);
 
-  // Simple login handler
+  // Login handler
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
 
-    // Hardcoded credentials
     if ((username === 'admin' && password === 'admin123') || 
         (username === 'guest' && password === 'guest123')) {
       setCurrentUser(username);
       setIsLoggedIn(true);
       localStorage.setItem('aiport_user', username);
     } else {
-      setLoginError('Invalid username or password');
+      setLoginError('Invalid credentials');
     }
   };
 
@@ -77,7 +77,7 @@ export default function App() {
     setPassword('');
   };
 
-  // Show login page if not logged in
+  // Show login page
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 p-4">
@@ -101,7 +101,7 @@ export default function App() {
               )}
               
               <div className="space-y-2">
-                <label htmlFor="username" className="text-sm font-medium">Username</label>
+                <label htmlFor="username" className="text-sm font-medium block">Username</label>
                 <Input
                   id="username"
                   type="text"
@@ -114,7 +114,7 @@ export default function App() {
               </div>
               
               <div className="space-y-2">
-                <label htmlFor="password" className="text-sm font-medium">Password</label>
+                <label htmlFor="password" className="text-sm font-medium block">Password</label>
                 <Input
                   id="password"
                   type="password"
@@ -143,173 +143,7 @@ export default function App() {
     );
   }
 
-  // Rest of your chat app code...
-  const activeThread = threads.find(t => t.id === activeChat) || null;
-  const messages = activeThread ? activeThread.messages.map(m => ({
-    ...m,
-    timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp) : m.timestamp
-  })) : [];
-
-  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; data?: any[] }> => {
-    const res = await queryAPI(userMessage);
-    return {
-      answer: res.answer,
-      chart: res.chart,
-      data: res.tableData
-    }; 
-  };
-
-  useEffect(() => {
-    const t = setTimeout(() => {
-      try {
-        const root = scrollAreaRef.current as HTMLElement | null;
-        if (!root) return;
-        const viewport = root.querySelector('[data-slot="scroll-area-viewport"]');
-        if (viewport) {
-          (viewport as HTMLElement).scrollTo({ top: (viewport as HTMLElement).scrollHeight, behavior: 'smooth' });
-        } else {
-          bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }
-      } catch (err) {}
-    }, 50);
-    return () => clearTimeout(t);
-  }, [messages]);
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed: ChatThread[] = JSON.parse(raw);
-        const hydrated = parsed.map(t => ({
-          ...t,
-          lastUpdated: t.lastUpdated ? new Date(t.lastUpdated).toString() : new Date().toString(),
-          messages: (t.messages || []).map(m => ({
-            ...m,
-            timestamp: m.timestamp ? new Date(m.timestamp).toString() : new Date().toString()
-          }))
-        }));
-        setThreads(hydrated);
-      }
-    } catch (err) {
-      console.error('Failed to load chat threads', err);
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
-    } catch (err) {
-      console.error('Failed to save chat threads', err);
-    }
-  }, [threads]);
-
-  const handleSendMessage = async (content: string) => {
-    let currentChatId = activeChat;
-    if (!currentChatId) {
-      currentChatId = Date.now().toString();
-      setActiveChat(currentChatId);
-    }
-
-    const threadExists = threads.some(t => t.id === currentChatId);
-    if (!threadExists) {
-      const toAdd: ChatThread = pendingThread && pendingThread.id === currentChatId
-        ? pendingThread
-        : {
-            id: currentChatId,
-            title: 'New Chat',
-            messages: [],
-            lastUpdated: new Date().toString()
-          };
-      setThreads(prev => [toAdd, ...prev]);
-      if (pendingThread && pendingThread.id === currentChatId) setPendingThread(null);
-    }
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      content,
-      role: 'user',
-      timestamp: new Date().toString()
-    };
-
-    setThreads(prev => prev.map(t => t.id === currentChatId ? {
-      ...t,
-      messages: [...t.messages, userMessage],
-      lastUpdated: new Date().toString()
-    } : t));
-
-    setIsTyping(true);
-
-    try {
-      const response = await generateResponse(content);
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: response.answer,
-        role: 'assistant',
-        timestamp: new Date().toString(),
-        chart: response.chart,
-        data: response.data
-      };
-
-      setThreads(prev => prev.map(t => t.id === currentChatId ? ({
-        ...t,
-        messages: [...t.messages, assistantMessage],
-        lastUpdated: new Date().toString()
-      }) : t));
-    } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: "I apologize, but I'm having trouble processing your request right now. Please try again in a moment.",
-        role: 'assistant',
-        timestamp: new Date().toString()
-      };
-      setThreads(prev => prev.map(t => t.id === currentChatId ? ({
-        ...t,
-        messages: [...t.messages, errorMessage],
-        lastUpdated: new Date().toString()
-      }) : t));
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  const handleNewChat = () => {
-    const id = Date.now().toString();
-    const newThread: ChatThread = {
-      id,
-      title: 'New Chat',
-      messages: [],
-      lastUpdated: new Date().toString()
-    };
-    setPendingThread(newThread);
-    setActiveChat(id);
-  };
-
-  const handleSelectChat = (chatId: string) => {
-    if (pendingThread && (!pendingThread.messages || pendingThread.messages.length === 0)) {
-      setPendingThread(null);
-    }
-    setActiveChat(chatId);
-  };
-
-  const handleDeleteChat = (chatId: string) => {
-    if (pendingThread && pendingThread.id === chatId) {
-      setPendingThread(null);
-      setActiveChat(prevActive => prevActive === chatId ? (threads.length ? threads[0].id : null) : prevActive);
-      return;
-    }
-    setThreads(prev => {
-      const remaining = prev.filter(t => t.id !== chatId);
-      setActiveChat(prevActive => {
-        if (prevActive === chatId) {
-          return remaining.length ? remaining[0].id : null;
-        }
-        return prevActive;
-      });
-      return remaining;
-    });
-  };
-
-  // Handlers and hooks
+  // Chat logic
   const activeThread = threads.find(t => t.id === activeChat) || null;
   const messages = activeThread ? activeThread.messages.map(m => ({
     ...m,
@@ -528,7 +362,7 @@ export default function App() {
                       </div>
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="text-sm font-semibold text-gray-900">Gate Assistant</span>
+                          <span className="text-sm font-medium text-gray-900">Gate Assistant</span>
                           <span className="text-xs text-gray-500">typing...</span>
                         </div>
                         <div className="flex items-center gap-1">
