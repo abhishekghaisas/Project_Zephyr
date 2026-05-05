@@ -327,7 +327,9 @@ export default function App() {
           id: t.id,
           title: t.title,
           timestamp: t.lastUpdated,
-          preview: t.messages.length ? t.messages[t.messages.length - 1].content.slice(0, 80) : 'No messages yet'
+          preview: t.messages.length && t.messages[t.messages.length - 1]?.content 
+            ? t.messages[t.messages.length - 1].content.slice(0, 80) 
+            : 'No messages yet'
         }))}
         onDeleteChat={handleDeleteChat}
       />
