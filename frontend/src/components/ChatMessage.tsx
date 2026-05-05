@@ -126,7 +126,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
         {/* Table Only (no chart) */}
         {message.role === 'assistant' && !message.chart && message.data && message.data.length > 0 && (
           <div className="mt-4">
-            <DataTable 
+            <DataTableWithExport 
               data={message.data} 
               title="Query Results"
               pageSize={15}
