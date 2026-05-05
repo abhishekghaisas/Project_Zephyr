@@ -4,7 +4,7 @@ import { Avatar, AvatarFallback } from './ui/avatar';
 import { Copy, Check, BarChart3, Table as TableIcon } from 'lucide-react';
 import { cn } from './ui/utils';
 import ChartVisualization from './ChartVisualization';
-import { DataTable } from './DataTable';
+import { DataTable } from './DataTableWithExport';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
