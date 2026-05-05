@@ -4,7 +4,7 @@ import { Avatar, AvatarFallback } from './ui/avatar';
 import { Copy, Check, BarChart3, Table as TableIcon } from 'lucide-react';
 import { cn } from './ui/utils';
 import ChartVisualization from './ChartVisualization';
-import { DataTable } from './DataTableWithExport';
+import { DataTableWithExport } from './DataTableWithExport';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -13,7 +13,7 @@ interface Message {
   id: string;
   content: string;
   role: 'user' | 'assistant';
-  timestamp: Date;
+  timestamp: Date | string;
   chart?: any;
   data?: any[];
 }
@@ -32,7 +32,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const formatTime = (date: Date) => {
+  const formatTime = (timestamp: Date | string) => {
+    const date = typeof timestamp === 'string' ? new Date(timestamp) : timestamp;
     return date.toLocaleTimeString('en-US', { 
       hour: 'numeric', 
       minute: '2-digit',
