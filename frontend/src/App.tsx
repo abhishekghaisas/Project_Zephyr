@@ -17,6 +17,13 @@ interface Message {
   timestamp: string | Date;
   chart?: any;
   data?: any[];
+  metadata?: {
+    outputFormat?: string;
+    outputConfidence?: number;
+    queryType?: string;
+    rowCount?: number;
+    sqlSource?: string;
+  };
 }
 
 interface ChatThread {
@@ -26,7 +33,7 @@ interface ChatThread {
   lastUpdated: string | Date;
 }
 
-const STORAGE_KEY = 'gate_chat_threads_v1';
+const STORAGE_KEY = 'aiport_chat_threads_v7_0_fixed';
 
 export default function App() {
   // Login state
@@ -39,13 +46,12 @@ export default function App() {
   // Chat state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [pendingThread, setPendingThread] = useState<ChatThread | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
   const [activeChat, setActiveChat] = useState<string | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Check if already logged in on mount
+  // Check if already logged in
   useEffect(() => {
     const savedUser = localStorage.getItem('aiport_user');
     if (savedUser) {
@@ -54,68 +60,47 @@ export default function App() {
     }
   }, []);
 
-  // Computed values
-  const activeThread = threads.find(t => t.id === activeChat) || null;
-  const messages = activeThread ? activeThread.messages.map(m => ({
-    ...m,
-    timestamp: typeof m.timestamp === 'string' ? new Date(m.timestamp) : m.timestamp
-  })) : [];
-  const isWelcomeView = messages.length === 0;
-
-  // API call
-  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; tableData?: any[] }> => {
-    const res = await queryAPI(userMessage);
-    return {
-      answer: res.answer,
-      chart: res.chart,
-      tableData: res.tableData
-    }; 
-  };
-
-  // Auto-scroll effect
+  // Load threads (only after login)
   useEffect(() => {
-    const t = setTimeout(() => {
+    if (!isLoggedIn) return;
+
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
       try {
-        const root = scrollAreaRef.current as HTMLElement | null;
-        if (!root) return;
-        const viewport = root.querySelector('[data-slot="scroll-area-viewport"]');
-        if (viewport) {
-          (viewport as HTMLElement).scrollTo({ top: (viewport as HTMLElement).scrollHeight, behavior: 'smooth' });
-        } else {
-          bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        const parsed = JSON.parse(saved);
+        console.log('💾 Loaded threads:', parsed.length);
+        setThreads(parsed);
+        if (parsed.length > 0) {
+          setActiveChat(parsed[0].id);
         }
-      } catch (err) {}
-    }, 50);
-    return () => clearTimeout(t);
-  }, [messages]);
-
-  // Load threads from localStorage
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed: ChatThread[] = JSON.parse(raw);
-        const hydrated = parsed.map(t => ({
-          ...t,
-          lastUpdated: t.lastUpdated ? new Date(t.lastUpdated).toString() : new Date().toString(),
-          messages: (t.messages || []).map(m => ({
-            ...m,
-            timestamp: m.timestamp ? new Date(m.timestamp).toString() : new Date().toString()
-          }))
-        }));
-        setThreads(hydrated);
+      } catch (e) {
+        console.error('Error loading threads:', e);
       }
-    } catch (err) {
-      console.error('Failed to load chat threads', err);
+    } else {
+      const initialThread: ChatThread = {
+        id: Date.now().toString(),
+        title: 'New Chat',
+        messages: [],
+        lastUpdated: new Date().toString()
+      };
+      console.log('🆕 Creating initial thread:', initialThread.id);
+      setThreads([initialThread]);
+      setActiveChat(initialThread.id);
     }
-  }, []);
+  }, [isLoggedIn]);
 
-  // Save threads to localStorage
+  // Save threads
   useEffect(() => {
-    try {
+    if (threads.length > 0 && isLoggedIn) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
-    } catch (err) {
-      console.error('Failed to save chat threads', err);
+      console.log('💾 Saved threads:', threads.length);
+    }
+  }, [threads, isLoggedIn]);
+
+  // Auto-scroll
+  useEffect(() => {
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [threads]);
 
@@ -142,113 +127,7 @@ export default function App() {
     setPassword('');
   };
 
-  const handleSendMessage = async (content: string) => {
-    let currentChatId = activeChat;
-    if (!currentChatId) {
-      currentChatId = Date.now().toString();
-      setActiveChat(currentChatId);
-    }
-
-    const threadExists = threads.some(t => t.id === currentChatId);
-    if (!threadExists) {
-      const toAdd: ChatThread = pendingThread && pendingThread.id === currentChatId
-        ? pendingThread
-        : {
-            id: currentChatId,
-            title: 'New Chat',
-            messages: [],
-            lastUpdated: new Date().toString()
-          };
-      setThreads(prev => [toAdd, ...prev]);
-      if (pendingThread && pendingThread.id === currentChatId) setPendingThread(null);
-    }
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      content,
-      role: 'user',
-      timestamp: new Date().toString()
-    };
-
-    setThreads(prev => prev.map(t => t.id === currentChatId ? {
-      ...t,
-      messages: [...t.messages, userMessage],
-      lastUpdated: new Date().toString()
-    } : t));
-
-    setIsTyping(true);
-
-    try {
-      const response = await generateResponse(content);
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: response.answer,
-        role: 'assistant',
-        timestamp: new Date().toString(),
-        chart: response.chart,
-        data: response.tableData
-      };
-
-      setThreads(prev => prev.map(t => t.id === currentChatId ? ({
-        ...t,
-        messages: [...t.messages, assistantMessage],
-        lastUpdated: new Date().toString()
-      }) : t));
-    } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: "I apologize, but I'm having trouble processing your request right now. Please try again in a moment.",
-        role: 'assistant',
-        timestamp: new Date().toString()
-      };
-      setThreads(prev => prev.map(t => t.id === currentChatId ? ({
-        ...t,
-        messages: [...t.messages, errorMessage],
-        lastUpdated: new Date().toString()
-      }) : t));
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  const handleNewChat = () => {
-    const id = Date.now().toString();
-    const newThread: ChatThread = {
-      id,
-      title: 'New Chat',
-      messages: [],
-      lastUpdated: new Date().toString()
-    };
-    setPendingThread(newThread);
-    setActiveChat(id);
-  };
-
-  const handleSelectChat = (chatId: string) => {
-    if (pendingThread && (!pendingThread.messages || pendingThread.messages.length === 0)) {
-      setPendingThread(null);
-    }
-    setActiveChat(chatId);
-  };
-
-  const handleDeleteChat = (chatId: string) => {
-    if (pendingThread && pendingThread.id === chatId) {
-      setPendingThread(null);
-      setActiveChat(prevActive => prevActive === chatId ? (threads.length ? threads[0].id : null) : prevActive);
-      return;
-    }
-    setThreads(prev => {
-      const remaining = prev.filter(t => t.id !== chatId);
-      setActiveChat(prevActive => {
-        if (prevActive === chatId) {
-          return remaining.length ? remaining[0].id : null;
-        }
-        return prevActive;
-      });
-      return remaining;
-    });
-  };
-
-  // Show login page if not logged in
+  // Show login page
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-green-50 p-4">
@@ -307,7 +186,151 @@ export default function App() {
     );
   }
 
-  // Main app view (after login)
+  // Get current messages
+  const currentThread = threads.find(t => t.id === activeChat);
+  const messages = currentThread?.messages || [];
+
+  console.log('🎨 Render - Active chat:', activeChat, 'Messages:', messages.length);
+
+  const handleSendMessage = async (userMessage: string) => {
+    console.log('\n=== HANDLE SEND MESSAGE ===');
+    console.log('📤 Input:', userMessage);
+    console.log('📍 Active chat:', activeChat);
+
+    if (!activeChat) {
+      console.error('❌ No active chat!');
+      return;
+    }
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      content: userMessage,
+      role: 'user',
+      timestamp: new Date().toString()
+    };
+
+    console.log('👤 User message:', userMsg.id);
+
+    setThreads(prevThreads => {
+      const updated = prevThreads.map(t => 
+        t.id === activeChat 
+          ? { ...t, messages: [...t.messages, userMsg], lastUpdated: new Date().toString() }
+          : t
+      );
+      console.log('✅ User message added');
+      return updated;
+    });
+
+    const currentThread = threads.find(t => t.id === activeChat);
+    if (currentThread && currentThread.messages.length === 0) {
+      const title = userMessage.slice(0, 50);
+      setThreads(prev => prev.map(t => 
+        t.id === activeChat ? { ...t, title } : t
+      ));
+    }
+
+    setIsTyping(true);
+
+    try {
+      console.log('🌐 Calling API...');
+      const response = await queryAPI(userMessage);
+
+      console.log('✅ API Response:', {
+        hasMessage: !!response.message,
+        hasTableData: !!response.tableData,
+        hasChart: !!response.chart,
+        tableDataLength: response.tableData?.length
+      });
+
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: response.message || 'No response',
+        role: 'assistant',
+        timestamp: new Date().toString(),
+        chart: response.chart,
+        data: response.tableData, // ✅ FIXED - using tableData
+        metadata: {
+          outputFormat: response.output_format,
+          outputConfidence: response.output_confidence,
+          queryType: response.use_case,
+          rowCount: response.row_count || 0,
+          sqlSource: response.sql_source
+        }
+      };
+
+      console.log('🤖 Assistant message created:', {
+        hasChart: !!assistantMessage.chart,
+        hasData: !!assistantMessage.data,
+        dataLength: assistantMessage.data?.length
+      });
+
+      setThreads(prevThreads => {
+        const updated = prevThreads.map(t => {
+          if (t.id === activeChat) {
+            const newMessages = [...t.messages, assistantMessage];
+            console.log('✅ Assistant message added. Total messages:', newMessages.length);
+            return {
+              ...t,
+              messages: newMessages,
+              lastUpdated: new Date().toString()
+            };
+          }
+          return t;
+        });
+        return updated;
+      });
+
+    } catch (error) {
+      console.error('❌ Error:', error);
+      
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        role: 'assistant',
+        timestamp: new Date().toString()
+      };
+
+      setThreads(prev => prev.map(t => 
+        t.id === activeChat 
+          ? { ...t, messages: [...t.messages, errorMessage] }
+          : t
+      ));
+    } finally {
+      setIsTyping(false);
+      console.log('=== SEND MESSAGE END ===\n');
+    }
+  };
+
+  const handleNewChat = () => {
+    const newThread: ChatThread = {
+      id: Date.now().toString(),
+      title: 'New Chat',
+      messages: [],
+      lastUpdated: new Date().toString()
+    };
+    
+    setThreads(prev => [newThread, ...prev]);
+    setActiveChat(newThread.id);
+    console.log('🆕 New chat:', newThread.id);
+  };
+
+  const handleSelectChat = (chatId: string) => {
+    setActiveChat(chatId);
+    console.log('📌 Selected:', chatId);
+  };
+
+  const handleDeleteChat = (chatId: string) => {
+    setThreads(prev => {
+      const remaining = prev.filter(t => t.id !== chatId);
+      if (activeChat === chatId) {
+        setActiveChat(remaining.length > 0 ? remaining[0].id : null);
+      }
+      return remaining;
+    });
+  };
+
+  const isWelcomeView = messages.length === 0;
+
   return (
     <div className="flex h-screen overflow-hidden bg-white">
       <ChatSidebar
@@ -320,7 +343,7 @@ export default function App() {
           id: t.id,
           title: t.title,
           timestamp: t.lastUpdated,
-          preview: t.messages.length && t.messages[t.messages.length - 1]?.content 
+          preview: t.messages.length && t.messages[t.messages.length - 1]?.content
             ? t.messages[t.messages.length - 1].content.slice(0, 80) 
             : 'No messages yet'
         }))}
@@ -328,7 +351,7 @@ export default function App() {
       />
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        {/* Header with Logout */}
+        {/* Header with user info and logout */}
         <div className="border-b border-gray-200 bg-white px-6 py-3 flex items-center justify-between">
           <div>
             <h1 className="text-lg font-semibold text-gray-900">AIport Assistant</h1>
@@ -350,6 +373,7 @@ export default function App() {
                   {messages.map((message) => (
                     <ChatMessage key={message.id} message={message} />
                   ))}
+                  
                   <div ref={bottomRef} />
                   
                   {isTyping && (
@@ -378,7 +402,11 @@ export default function App() {
           </>
         )}
 
-        <ChatInput onSendMessage={handleSendMessage} disabled={false} isTyping={isTyping} />
+        <ChatInput
+          onSendMessage={handleSendMessage}
+          disabled={isTyping}
+          isTyping={isTyping}
+        />
       </div>
     </div>
   );
