@@ -107,7 +107,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             {viewMode === 'chart' ? (
               <ChartVisualization chartConfig={message.chart} insightsText={message.content} />
             ) : (
-              <DataTable 
+              <DataTableWithExport 
                 data={message.data} 
                 title="SeaTac Operations Analysis"
                 pageSize={15}
