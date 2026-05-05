@@ -4,7 +4,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 export interface QueryResponse {
   success: boolean;
   message: string;
-  data?: any[];
+  tableData?: any[];
   chart?: any;
   row_count?: number;
   output_format?: string;
@@ -38,7 +38,7 @@ export async function queryAPI(query: string): Promise<QueryResponse> {
       throw new Error(`HTTP ${response.status}: ${errorText}`);
     }
 
-    const data: QueryResponse = await response.json();
+    const data = await response.json();
     
     console.log('✅ Response data:', data);
     console.log('📊 Data fields:', {
@@ -50,33 +50,43 @@ export async function queryAPI(query: string): Promise<QueryResponse> {
       sqlSource: data.sql_source
     });
 
-    // Validate response structure
-    if (typeof data !== 'object') {
-      throw new Error('Invalid response format from server');
-    }
-
     // Backend returns success: false on errors
     if (data.success === false) {
-      throw new Error(data.message || 'Query failed');
+      return {
+        success: false,
+        message: data.message || 'Query failed'
+      };
     }
 
-    // Return the response as-is (matches backend format)
-    return data;
+    // Return with tableData mapped from backend's data field
+    return {
+      success: data.success,
+      message: data.message,
+      tableData: data.data, // ✅ Map backend's "data" to "tableData"
+      chart: data.chart,
+      row_count: data.row_count,
+      output_format: data.output_format,
+      output_confidence: data.output_confidence,
+      sql_source: data.sql_source,
+      use_case: data.use_case,
+      insights: data.insights,
+      sql_queries: data.sql_queries
+    };
 
   } catch (error) {
     console.error('❌ Query error:', error);
 
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error(
-        `Cannot connect to backend at ${API_BASE_URL}. Please ensure backend is running.`
-      );
+      return {
+        success: false,
+        message: `Cannot connect to backend at ${API_BASE_URL}. Please ensure backend is running.`
+      };
     }
 
-    if (error instanceof Error) {
-      throw error;
-    }
-
-    throw new Error('An unexpected error occurred');
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'An unexpected error occurred'
+    };
   }
 }
 
