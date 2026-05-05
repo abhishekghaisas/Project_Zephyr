@@ -248,7 +248,7 @@ export default function App() {
         role: 'assistant',
         timestamp: new Date().toString(),
         chart: response.chart,
-        data: response.tableData, // ✅ FIXED - using tableData
+        data: response.tableData, // ✅ Using tableData from query.ts
         metadata: {
           outputFormat: response.output_format,
           outputConfidence: response.output_confidence,
