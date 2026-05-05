@@ -4,7 +4,11 @@ import { ChatSidebar } from './components/ChatSidebar';
 import { ChatMessage } from './components/ChatMessage';
 import { ChatInput } from './components/ChatInput';
 import { ChatWelcome } from './components/ChatWelcome';
+import { Login } from './components/Login';
+import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ScrollArea } from './components/ui/scroll-area';
+import { Button } from './components/ui/button';
+import { LogOut } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -13,13 +17,6 @@ interface Message {
   timestamp: string | Date;
   chart?: any;
   data?: any[];
-  metadata?: {
-    outputFormat?: string;
-    outputConfidence?: number;
-    queryType?: string;
-    rowCount?: number;
-    sqlSource?: string;
-  };
 }
 
 interface ChatThread {
@@ -29,293 +26,242 @@ interface ChatThread {
   lastUpdated: string | Date;
 }
 
-const STORAGE_KEY = 'aiport_chat_threads_v7_0_fixed';
+const STORAGE_KEY = 'gate_chat_threads_v1';
 
-export default function App() {
+function AppContent() {
+  const { isAuthenticated, user, login, logout } = useAuth();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [threads, setThreads] = useState<ChatThread[]>([]);
-  const [activeChat, setActiveChat] = useState<string | null>(null);
+  const [pendingThread, setPendingThread] = useState<ChatThread | null>(null);
   const [isTyping, setIsTyping] = useState(false);
+  const [activeChat, setActiveChat] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Load threads
+  // Load threads from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
+    if (!isAuthenticated) return;
+    
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
       try {
-        const parsed = JSON.parse(saved);
-        console.log('💾 Loaded threads:', parsed.length);
-        setThreads(parsed);
-        if (parsed.length > 0) {
-          setActiveChat(parsed[0].id);
+        const parsedThreads = JSON.parse(stored);
+        const threadsWithDates = parsedThreads.map((thread: ChatThread) => ({
+          ...thread,
+          lastUpdated: new Date(thread.lastUpdated),
+          messages: thread.messages.map((msg: Message) => ({
+            ...msg,
+            timestamp: new Date(msg.timestamp)
+          }))
+        }));
+        setThreads(threadsWithDates);
+        if (threadsWithDates.length > 0 && !activeChat) {
+          setActiveChat(threadsWithDates[0].id);
         }
-      } catch (e) {
-        console.error('Error loading threads:', e);
+      } catch (error) {
+        console.error('Failed to load chat threads:', error);
       }
-    } else {
-      // Create initial thread if none exists
-      const initialThread: ChatThread = {
-        id: Date.now().toString(),
-        title: 'New Chat',
-        messages: [],
-        lastUpdated: new Date().toString()
-      };
-      console.log('🆕 Creating initial thread:', initialThread.id);
-      setThreads([initialThread]);
-      setActiveChat(initialThread.id);
     }
-  }, []);
+  }, [isAuthenticated]);
 
-  // Save threads
+  // Save threads to localStorage
   useEffect(() => {
-    if (threads.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
-      console.log('💾 Saved threads:', threads.length, 'Total messages:', threads.reduce((sum, t) => sum + t.messages.length, 0));
-    }
-  }, [threads]);
+    if (!isAuthenticated || threads.length === 0) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
+  }, [threads, isAuthenticated]);
 
-  // Auto-scroll
+  // Auto-scroll to bottom
   useEffect(() => {
-    if (bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (scrollAreaRef.current) {
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
     }
-  }, [threads]);
+  }, [activeThread?.messages.length, isTyping]);
 
-  // Get current messages
-  const currentThread = threads.find(t => t.id === activeChat);
-  const messages = currentThread?.messages || [];
-
-  console.log('🎨 Render - Active chat:', activeChat, 'Messages:', messages.length);
-
-  const handleSendMessage = async (userMessage: string) => {
-    console.log('\n=== HANDLE SEND MESSAGE ===');
-    console.log('📤 Input:', userMessage);
-    console.log('📍 Active chat:', activeChat);
-    console.log('📚 Current threads:', threads.length);
-
-    if (!activeChat) {
-      console.error('❌ No active chat!');
-      return;
-    }
-
-    // Create user message
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      content: userMessage,
-      role: 'user',
-      timestamp: new Date().toString()
-    };
-
-    console.log('👤 User message:', userMsg.id);
-
-    // Add user message IMMEDIATELY
-    setThreads(prevThreads => {
-      const updated = prevThreads.map(t => 
-        t.id === activeChat 
-          ? { ...t, messages: [...t.messages, userMsg], lastUpdated: new Date().toString() }
-          : t
-      );
-      console.log('✅ User message added. Thread now has:', updated.find(t => t.id === activeChat)?.messages.length, 'messages');
-      return updated;
-    });
-
-    // Update title if this is first message
-    const currentThread = threads.find(t => t.id === activeChat);
-    if (currentThread && currentThread.messages.length === 0) {
-      const title = userMessage.slice(0, 50);
-      setThreads(prev => prev.map(t => 
-        t.id === activeChat ? { ...t, title } : t
-      ));
-    }
-
-    setIsTyping(true);
-
-    try {
-      console.log('🌐 Calling API...');
-      const response = await queryAPI(userMessage);
-
-      console.log('✅ API Response:', {
-        success: response.success,
-        hasMessage: !!response.message,
-        hasData: !!response.data,
-        hasChart: !!response.chart
-      });
-
-      // Create assistant message
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: response.message || 'No response',
-        role: 'assistant',
-        timestamp: new Date().toString(),
-        chart: response.chart,
-        data: response.data,
-        metadata: {
-          outputFormat: response.output_format,
-          outputConfidence: response.output_confidence,
-          queryType: response.use_case,
-          rowCount: response.row_count || 0,
-          sqlSource: response.sql_source
-        }
-      };
-
-      console.log('🤖 Assistant message:', assistantMessage.id, {
-        contentLength: assistantMessage.content.length,
-        hasChart: !!assistantMessage.chart,
-        hasData: !!assistantMessage.data,
-        dataLength: assistantMessage.data?.length
-      });
-
-      // Add assistant message IMMEDIATELY with functional update
-      setThreads(prevThreads => {
-        const updated = prevThreads.map(t => {
-          if (t.id === activeChat) {
-            const newMessages = [...t.messages, assistantMessage];
-            console.log('✅ Assistant message added. Thread now has:', newMessages.length, 'messages');
-            return {
-              ...t,
-              messages: newMessages,
-              lastUpdated: new Date().toString()
-            };
-          }
-          return t;
-        });
-        
-        const finalThread = updated.find(t => t.id === activeChat);
-        console.log('📝 Final thread state:', {
-          id: finalThread?.id,
-          messageCount: finalThread?.messages.length,
-          lastMessage: finalThread?.messages[finalThread.messages.length - 1]?.role
-        });
-        
-        return updated;
-      });
-
-      console.log('✅ State update completed');
-
-    } catch (error) {
-      console.error('❌ Error:', error);
-      
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        role: 'assistant',
-        timestamp: new Date().toString()
-      };
-
-      setThreads(prev => prev.map(t => 
-        t.id === activeChat 
-          ? { ...t, messages: [...t.messages, errorMessage] }
-          : t
-      ));
-    } finally {
-      setIsTyping(false);
-      console.log('=== HANDLE SEND MESSAGE END ===\n');
-    }
-  };
+  const activeThread = activeChat 
+    ? threads.find(t => t.id === activeChat) 
+    : pendingThread;
 
   const handleNewChat = () => {
     const newThread: ChatThread = {
       id: Date.now().toString(),
       title: 'New Chat',
       messages: [],
-      lastUpdated: new Date().toString()
+      lastUpdated: new Date()
     };
+    setPendingThread(newThread);
+    setActiveChat(null);
+  };
+
+  const handleSendMessage = async (content: string) => {
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      content,
+      role: 'user',
+      timestamp: new Date()
+    };
+
+    let currentThread = activeThread;
     
-    setThreads(prev => [newThread, ...prev]);
-    setActiveChat(newThread.id);
-    console.log('🆕 New chat:', newThread.id);
-  };
-
-  const handleSelectChat = (chatId: string) => {
-    setActiveChat(chatId);
-    console.log('📌 Selected:', chatId);
-  };
-
-  const handleDeleteChat = (chatId: string) => {
-    setThreads(prev => {
-      const remaining = prev.filter(t => t.id !== chatId);
-      if (activeChat === chatId) {
-        setActiveChat(remaining.length > 0 ? remaining[0].id : null);
+    if (!currentThread) {
+      const newThread: ChatThread = {
+        id: Date.now().toString(),
+        title: content.slice(0, 50),
+        messages: [userMessage],
+        lastUpdated: new Date()
+      };
+      currentThread = newThread;
+      setThreads(prev => [newThread, ...prev]);
+      setActiveChat(newThread.id);
+      setPendingThread(null);
+    } else {
+      if (pendingThread) {
+        const updatedPending = {
+          ...pendingThread,
+          title: content.slice(0, 50),
+          messages: [userMessage],
+          lastUpdated: new Date()
+        };
+        setThreads(prev => [updatedPending, ...prev]);
+        setActiveChat(updatedPending.id);
+        setPendingThread(null);
+        currentThread = updatedPending;
+      } else {
+        setThreads(prev => prev.map(t => 
+          t.id === currentThread!.id 
+            ? { ...t, messages: [...t.messages, userMessage], lastUpdated: new Date() }
+            : t
+        ));
       }
-      return remaining;
-    });
+    }
+
+    setIsTyping(true);
+
+    try {
+      const response = await queryAPI(content);
+      
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: response.message || response.insights?.join('\n\n') || 'Query executed successfully.',
+        role: 'assistant',
+        timestamp: new Date(),
+        chart: response.chart || null,
+        data: response.data || null
+      };
+
+      setThreads(prev => prev.map(t => 
+        t.id === currentThread!.id
+          ? { ...t, messages: [...t.messages, assistantMessage], lastUpdated: new Date() }
+          : t
+      ));
+    } catch (error) {
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: 'Sorry, I encountered an error processing your request. Please try again.',
+        role: 'assistant',
+        timestamp: new Date()
+      };
+
+      setThreads(prev => prev.map(t => 
+        t.id === currentThread!.id
+          ? { ...t, messages: [...t.messages, errorMessage], lastUpdated: new Date() }
+          : t
+      ));
+    } finally {
+      setIsTyping(false);
+    }
   };
 
-  const isWelcomeView = messages.length === 0;
+  const handleDeleteThread = (threadId: string) => {
+    setThreads(prev => prev.filter(t => t.id !== threadId));
+    if (activeChat === threadId) {
+      setActiveChat(threads[0]?.id || null);
+      setPendingThread(null);
+    }
+  };
+
+  const handleSelectThread = (threadId: string) => {
+    setActiveChat(threadId);
+    setPendingThread(null);
+  };
+
+  // Show login page if not authenticated
+  if (!isAuthenticated) {
+    return <Login onLogin={login} />;
+  }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white">
+    <div className="flex h-screen bg-gray-50">
       <ChatSidebar
-        isCollapsed={isSidebarCollapsed}
-        onToggle={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        threads={threads}
+        activeThreadId={activeChat}
+        onSelectThread={handleSelectThread}
         onNewChat={handleNewChat}
-        activeChat={activeChat}
-        onSelectChat={handleSelectChat}
-        chatHistory={threads.map(t => ({
-          id: t.id,
-          title: t.title,
-          timestamp: t.lastUpdated,
-          preview: t.messages.length 
-            ? t.messages[t.messages.length - 1].content.slice(0, 80) 
-            : 'No messages yet'
-        }))}
-        onDeleteChat={handleDeleteChat}
+        onDeleteThread={handleDeleteThread}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
       />
 
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        {isWelcomeView ? (
-          <ChatWelcome />
-        ) : (
-          <>
-            <div className="border-b border-gray-200 px-6 py-3 bg-yellow-50">
-              <p className="text-sm font-mono">
-                🐛 DEBUG: Active chat: {activeChat} | Messages: {messages.length} | Threads: {threads.length}
-              </p>
-            </div>
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header with Logout */}
+        <div className="border-b border-gray-200 bg-white px-6 py-3 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold text-gray-900">AIport Assistant</h1>
+            <p className="text-xs text-gray-500">Logged in as {user}</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={logout}
+            className="h-8 px-3"
+          >
+            <LogOut className="h-4 w-4 mr-2" />
+            Logout
+          </Button>
+        </div>
 
-            <div className="flex-1 overflow-hidden">
-              <ScrollArea ref={scrollAreaRef} className="h-full">
-                <div className="max-w-4xl mx-auto">
-                  <div className="p-4 bg-blue-50 border-b">
-                    <p className="text-xs font-mono">
-                      Rendering {messages.length} messages from thread {activeChat}
-                    </p>
-                  </div>
-                  
-                  {messages.map((message, idx) => {
-                    console.log(`🎨 Mapping message ${idx + 1}:`, message.id, message.role);
-                    return (
-                      <div key={message.id} className="border-b border-gray-100">
-                        <div className="p-2 bg-gray-50">
-                          <span className="text-xs font-mono text-gray-600">
-                            Message {idx + 1}: {message.role} | {message.content?.slice(0, 30)}...
-                          </span>
-                        </div>
-                        <ChatMessage message={message} />
+        {/* Chat Area */}
+        <ScrollArea ref={scrollAreaRef} className="flex-1">
+          <div className="max-w-4xl mx-auto">
+            {activeThread?.messages.length === 0 ? (
+              <ChatWelcome />
+            ) : (
+              <div className="py-4">
+                {activeThread?.messages.map((message) => (
+                  <ChatMessage key={message.id} message={message} />
+                ))}
+                {isTyping && (
+                  <div className="flex gap-4 p-6 bg-gray-50/30">
+                    <div className="flex-shrink-0">
+                      <div className="h-8 w-8 bg-green-100 rounded-full flex items-center justify-center">
+                        <span className="text-sm font-medium text-green-700">AI</span>
                       </div>
-                    );
-                  })}
-                  
-                  <div ref={bottomRef} />
-                  
-                  {isTyping && (
-                    <div className="p-6 bg-yellow-50">
-                      <p className="text-sm">AI is typing...</p>
                     </div>
-                  )}
-                </div>
-              </ScrollArea>
-            </div>
-          </>
-        )}
+                    <div className="flex items-center gap-2 pt-1">
+                      <div className="flex gap-1">
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
 
-        <ChatInput
-          onSendMessage={handleSendMessage}
-          disabled={isTyping}
-          isTyping={isTyping}
-        />
+        <ChatInput onSendMessage={handleSendMessage} disabled={isTyping} />
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
