@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { Avatar, AvatarFallback } from './ui/avatar';
-import { Copy, Check } from 'lucide-react';
+import { Copy, Check, BarChart3, Table as TableIcon } from 'lucide-react';
 import { cn } from './ui/utils';
 import ChartVisualization from './ChartVisualization';
-import { DataTableWithExport } from './DataTableWithExport';
+import { DataTable } from './DataTable';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -24,6 +24,7 @@ interface ChatMessageProps {
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const [copied, setCopied] = useState(false);
+  const [viewMode, setViewMode] = useState<'chart' | 'table'>('chart');
 
   const copyToClipboard = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -78,14 +79,58 @@ export function ChatMessage({ message }: ChatMessageProps) {
           </ReactMarkdown>
         </div>
 
-        {/* Chart Visualization with Table Toggle */}
-        {message.role === 'assistant' && message.chart && (
-          <ChartVisualization chartConfig={message.chart} tableData={message.data} />
+        {/* Chart/Table Toggle for responses with both */}
+        {message.role === 'assistant' && message.chart && message.data && message.data.length > 0 && (
+          <div className="mt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Button
+                variant={viewMode === 'chart' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('chart')}
+                className="h-8 px-3 text-xs"
+              >
+                <BarChart3 className="h-3 w-3 mr-1.5" />
+                Chart View
+              </Button>
+              <Button
+                variant={viewMode === 'table' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('table')}
+                className="h-8 px-3 text-xs"
+              >
+                <TableIcon className="h-3 w-3 mr-1.5" />
+                Table View
+              </Button>
+            </div>
+
+            {viewMode === 'chart' ? (
+              <ChartVisualization chartConfig={message.chart} insightsText={message.content} />
+            ) : (
+              <DataTable 
+                data={message.data} 
+                title="SeaTac Operations Analysis"
+                pageSize={15}
+              />
+            )}
+          </div>
         )}
 
-        {/* Table Data Only (when no chart) */}
+        {/* Chart Only (no table data) */}
+        {message.role === 'assistant' && message.chart && (!message.data || message.data.length === 0) && (
+          <div className="mt-4">
+            <ChartVisualization chartConfig={message.chart} insightsText={message.content} />
+          </div>
+        )}
+
+        {/* Table Only (no chart) */}
         {message.role === 'assistant' && !message.chart && message.data && message.data.length > 0 && (
-          <DataTableWithExport data={message.data} />
+          <div className="mt-4">
+            <DataTable 
+              data={message.data} 
+              title="Query Results"
+              pageSize={15}
+            />
+          </div>
         )}
 
         {/* Action Buttons */}
