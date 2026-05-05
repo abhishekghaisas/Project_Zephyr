@@ -5,7 +5,7 @@ import { ChatMessage } from './components/ChatMessage';
 import { ChatInput } from './components/ChatInput';
 import { ChatWelcome } from './components/ChatWelcome';
 import { Login } from './components/Login';
-import { AuthProvider, useAuth } from './hooks/useAuth';
+import { AuthProvider, useAuth } from '.useAuth';
 import { ScrollArea } from './components/ui/scroll-area';
 import { Button } from './components/ui/button';
 import { LogOut } from 'lucide-react';
