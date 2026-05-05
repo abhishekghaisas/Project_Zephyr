@@ -7,18 +7,19 @@ interface AuthContextType {
   logout: () => void;
 }
 
+// Create context with undefined initially
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // Hardcoded credentials (no backend needed)
-const VALID_CREDENTIALS = {
+const VALID_CREDENTIALS: Record<string, string> = {
   'admin': 'admin123',
   'guest': 'guest123',
-  // Add more users as needed
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Check if user is already logged in (from localStorage)
   useEffect(() => {
@@ -27,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(storedUser);
       setIsAuthenticated(true);
     }
+    setIsLoading(false);
   }, []);
 
   const login = async (username: string, password: string): Promise<boolean> => {
@@ -34,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await new Promise(resolve => setTimeout(resolve, 500));
 
     // Check credentials
-    if (VALID_CREDENTIALS[username as keyof typeof VALID_CREDENTIALS] === password) {
+    if (VALID_CREDENTIALS[username] === password) {
       setUser(username);
       setIsAuthenticated(true);
       localStorage.setItem('aiport_user', username);
@@ -49,6 +51,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAuthenticated(false);
     localStorage.removeItem('aiport_user');
   };
+
+  // Don't render children until we've checked localStorage
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-gray-500">Loading...</div>
+      </div>
+    );
+  }
 
   return (
     <AuthContext.Provider value={{ isAuthenticated, user, login, logout }}>
