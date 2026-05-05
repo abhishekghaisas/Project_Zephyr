@@ -55,6 +55,12 @@ interface ChartVisualizationProps {
 const ChartVisualization: React.FC<ChartVisualizationProps> = ({ chartConfig, tableData }) => {
   const [viewMode, setViewMode] = useState<'chart' | 'table'>('chart');
 
+  console.log('📊 ChartViz received:', { 
+    hasChart: !!chartConfig, 
+    hasTableData: !!tableData, 
+    tableDataLength: tableData?.length 
+  });
+
   if (!chartConfig) {
     return null;
   }
