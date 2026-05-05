@@ -63,12 +63,12 @@ export default function App() {
   const isWelcomeView = messages.length === 0;
 
   // API call
-  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; data?: any[] }> => {
+  const generateResponse = async (userMessage: string): Promise<{ answer: string; chart?: any; tableData?: any[] }> => {
     const res = await queryAPI(userMessage);
     return {
       answer: res.answer,
       chart: res.chart,
-      data: res.tableData
+      tableData: res.tableData
     }; 
   };
 
@@ -186,7 +186,7 @@ export default function App() {
         role: 'assistant',
         timestamp: new Date().toString(),
         chart: response.chart,
-        data: response.data
+        data: response.tableData
       };
 
       setThreads(prev => prev.map(t => t.id === currentChatId ? ({
@@ -301,13 +301,6 @@ export default function App() {
                 Sign In
               </Button>
             </form>
-
-            <div className="mt-6 pt-6 border-t border-gray-200">
-              <p className="text-xs text-center text-gray-500">
-                Demo Credentials:<br />
-                <span className="font-mono font-medium">admin / admin123</span>
-              </p>
-            </div>
           </CardContent>
         </Card>
       </div>
