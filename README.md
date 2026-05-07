@@ -2,7 +2,7 @@
 
 > AI-powered conversational interface for airport gate utilization analysis at Seattle-Tacoma International Airport
 >
-> Link: https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fendearing-abundance-production-5a45.up.railway.app%2F&data=05%7C02%7Cghaisas.a%40northeastern.edu%7C9aa69bb3864e43280b8f08deaab7358d%7Ca8eec281aaa34daeac9b9a398b9215e7%7C0%7C0%7C639135901207507521%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&sdata=gV0GO941tjx0F6%2FuOto0JNdZ6hyuXQ0LBCs6KqSy5tQ%3D&reserved=0
+> App Link: https://nam12.safelinks.protection.outlook.com/?url=https%3A%2F%2Fendearing-abundance-production-5a45.up.railway.app%2F&data=05%7C02%7Cghaisas.a%40northeastern.edu%7C9aa69bb3864e43280b8f08deaab7358d%7Ca8eec281aaa34daeac9b9a398b9215e7%7C0%7C0%7C639135901207507521%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&sdata=gV0GO941tjx0F6%2FuOto0JNdZ6hyuXQ0LBCs6KqSy5tQ%3D&reserved=0
 >
 > Username: admin
 > Password: admin123
